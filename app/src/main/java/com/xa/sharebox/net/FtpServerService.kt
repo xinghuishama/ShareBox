@@ -1,0 +1,271 @@
+package com.xa.sharebox.net
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.IBinder
+import android.util.Log
+import androidx.core.content.ContextCompat
+import com.xa.sharebox.MainActivity
+import com.xa.sharebox.model.FtpServerConfig
+import com.xa.sharebox.util.FileUtils
+import org.apache.ftpserver.FtpServer
+import org.apache.ftpserver.FtpServerFactory
+import org.apache.ftpserver.ftplet.Authentication
+import org.apache.ftpserver.ftplet.FtpException
+import org.apache.ftpserver.ftplet.User
+import org.apache.ftpserver.ftplet.UserManager
+import org.apache.ftpserver.listener.ListenerFactory
+import org.apache.ftpserver.usermanager.impl.BaseUser
+import org.apache.ftpserver.usermanager.impl.WritePermission
+import java.io.File
+import java.net.InetSocketAddress
+import java.net.Socket
+
+class FtpServerService : Service() {
+    private var ftpServer: FtpServer? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START -> {
+                val config = FtpServerConfig(
+                    port = intent.getIntExtra(EXTRA_PORT, 2211),
+                    username = intent.getStringExtra(EXTRA_USER) ?: "share",
+                    password = intent.getStringExtra(EXTRA_PASS) ?: "1234",
+                    sharedPath = intent.getStringExtra(EXTRA_PATH) ?: "/storage/emulated/0"
+                )
+                val notification = createNotification(config, "启动中...")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                } else {
+                    startForeground(NOTIF_ID, notification)
+                }
+                Thread { startFtpServer(config) }.start()
+            }
+            ACTION_STOP -> {
+                stopFtpServer()
+                stopSelf()
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun startFtpServer(config: FtpServerConfig) {
+        try {
+            Log.i(TAG, "Starting FTP server on port ${config.port}...")
+            val sharedDir = File(config.sharedPath)
+            if (!sharedDir.exists()) {
+                sharedDir.mkdirs()
+            }
+
+            val serverFactory = FtpServerFactory()
+            val listenerFactory = ListenerFactory()
+            listenerFactory.port = config.port
+            listenerFactory.idleTimeout = 300
+            serverFactory.addListener("default", listenerFactory.createListener())
+
+            val userManager = InMemoryUserManager()
+            val user = BaseUser()
+            user.name = config.username
+            user.password = config.password
+            user.homeDirectory = config.sharedPath
+            user.enabled = true
+            user.authorities = listOf(WritePermission())
+            userManager.save(user)
+
+            if (config.password.isEmpty()) {
+                val anon = BaseUser()
+                anon.name = "anonymous"
+                anon.password = ""
+                anon.homeDirectory = config.sharedPath
+                anon.enabled = true
+                userManager.save(anon)
+            }
+
+            serverFactory.userManager = userManager
+
+            ftpServer = serverFactory.createServer()
+            ftpServer?.start()
+
+            Thread.sleep(500)
+            if (!isPortListening(config.port)) {
+                throw RuntimeException("Port ${config.port} not listening")
+            }
+
+            Log.i(TAG, "FTP server started on port ${config.port}")
+            updateNotification(config, "运行中")
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to start FTP server", e)
+            updateNotification(config, "启动失败: ${e.message}")
+            stopSelf()
+        }
+    }
+
+    private fun isPortListening(port: Int): Boolean {
+        return try {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress("127.0.0.1", port), 1000)
+                true
+            }
+        } catch (e: Throwable) {
+            false
+        }
+    }
+
+    private fun stopFtpServer() {
+        try {
+            ftpServer?.stop()
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error stopping server", e)
+        }
+        ftpServer = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+    }
+
+    private fun createNotification(config: FtpServerConfig, status: String): Notification {
+        val channelName = "FTP Server"
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(CHANNEL_ID, channelName, NotificationManager.IMPORTANCE_LOW)
+            nm.createNotificationChannel(channel)
+        }
+
+        val ips = FileUtils.getLocalIpAddresses()
+        val ipText = if (ips.isNotEmpty()) ips.joinToString(", ") else "unknown"
+        val urlText = "ftp://$ipText:${config.port} - $status"
+
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            putExtra("tab", 3)
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val openPi = PendingIntent.getActivity(this, 0, openIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+        val stopIntent = Intent(this, FtpServerService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val stopPi = PendingIntent.getService(this, 1, stopIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+        builder.setContentTitle("ShareBox FTP")
+            .setContentText(urlText)
+            .setSmallIcon(android.R.drawable.ic_menu_share)
+            .setContentIntent(openPi)
+            .setOngoing(true)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止", stopPi)
+
+        return builder.build()
+    }
+
+    private fun updateNotification(config: FtpServerConfig, status: String) {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(NOTIF_ID, createNotification(config, status))
+    }
+
+    override fun onDestroy() {
+        stopFtpServer()
+        super.onDestroy()
+    }
+
+    companion object {
+        private const val TAG = "FtpServerService"
+        private const val NOTIF_ID = 1
+        private const val CHANNEL_ID = "ftp_server"
+
+        const val ACTION_START = "com.xa.sharebox.START_FTP"
+        const val ACTION_STOP = "com.xa.sharebox.STOP_FTP"
+        const val EXTRA_PORT = "port"
+        const val EXTRA_USER = "user"
+        const val EXTRA_PASS = "pass"
+        const val EXTRA_PATH = "path"
+
+        fun start(context: Context, config: FtpServerConfig): Boolean {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                    Log.w(TAG, "Notification permission not granted")
+                    return false
+                }
+            }
+            val intent = Intent(context, FtpServerService::class.java).apply {
+                action = ACTION_START
+                putExtra(EXTRA_PORT, config.port)
+                putExtra(EXTRA_USER, config.username)
+                putExtra(EXTRA_PASS, config.password)
+                putExtra(EXTRA_PATH, config.sharedPath)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            return true
+        }
+
+        fun stop(context: Context) {
+            val intent = Intent(context, FtpServerService::class.java).apply {
+                action = ACTION_STOP
+            }
+            context.startService(intent)
+        }
+    }
+
+    private class InMemoryUserManager : UserManager {
+        private val users = mutableMapOf<String, User>()
+
+        @Throws(FtpException::class)
+        override fun getUserByName(username: String): User? = users[username]
+
+        @Throws(FtpException::class)
+        override fun getAllUserNames(): Array<String> = users.keys.toTypedArray()
+
+        @Throws(FtpException::class)
+        override fun delete(username: String) {
+            users.remove(username)
+        }
+
+        @Throws(FtpException::class)
+        override fun save(user: User) {
+            users[user.name] = user
+        }
+
+        @Throws(FtpException::class)
+        override fun doesExist(username: String): Boolean = users.containsKey(username)
+
+        @Throws(FtpException::class)
+        override fun authenticate(authentication: Authentication): User? {
+            if (authentication is org.apache.ftpserver.usermanager.UsernamePasswordAuthentication) {
+                val user = users[authentication.username]
+                if (user != null) {
+                    val baseUser = user as org.apache.ftpserver.usermanager.impl.BaseUser
+                    if (baseUser.password == authentication.password) return user
+                }
+            }
+            return null
+        }
+
+        @Throws(FtpException::class)
+        override fun getAdminName(): String = "admin"
+
+        @Throws(FtpException::class)
+        override fun isAdmin(username: String): Boolean = false
+    }
+}
