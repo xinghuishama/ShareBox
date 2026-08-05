@@ -93,18 +93,6 @@ class FtpServerService : Service() {
             logToFile("step1: FtpServerFactory")
             val serverFactory = FtpServerFactory()
 
-            // Custom ConnectionConfig: all limits return false to skip internal checks
-            serverFactory.connectionConfig = object : org.apache.ftpserver.config.ConnectionConfig {
-                override fun getMaxLogins(): Int = 0
-                override fun getMaxConnections(): Int = 0
-                override fun getMaxConnectionsPerIp(): Int = 0
-                override fun isMaxLoginsReached(session: org.apache.ftpserver.impl.FtpIoSession?): Boolean = false
-                override fun isMaxConnectionsReached(): Boolean = false
-                override fun isMaxConnectionsPerIpReached(session: org.apache.mina.core.session.IoSession?): Boolean = false
-                override fun isMaxAnonymousLoginsReached(): Boolean = false
-            }
-            logToFile("step1b: ConnectionConfig set (all unlimited)")
-
             logToFile("step2: ListenerFactory port=${config.port}")
             val listenerFactory = ListenerFactory()
             listenerFactory.port = config.port
