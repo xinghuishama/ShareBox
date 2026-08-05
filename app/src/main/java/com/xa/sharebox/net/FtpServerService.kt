@@ -26,7 +26,7 @@ import org.apache.ftpserver.ftplet.FtpReply
 import org.apache.ftpserver.ftplet.FtpRequest
 import org.apache.ftpserver.ftplet.Ftplet
 import org.apache.ftpserver.ftplet.FtpletResult
-import org.apache.ftpserver.ftplet.FtpletSession
+import org.apache.ftpserver.ftplet.FtpSession
 import org.apache.ftpserver.ftplet.User
 import org.apache.ftpserver.ftplet.UserManager
 import org.apache.ftpserver.listener.ListenerFactory
@@ -342,22 +342,22 @@ class DebugFtplet : DefaultFtplet() {
         FtpServerService.logToFile("FTPLET destroy")
     }
 
-    override fun onConnect(session: FtpletSession): FtpletResult {
-        FtpServerService.logToFile("FTPLET onConnect: ${session.remoteAddress}")
+    override fun onConnect(session: FtpSession): FtpletResult {
+        FtpServerService.logToFile("FTPLET onConnect")
         return FtpletResult.DEFAULT
     }
 
-    override fun onDisconnect(session: FtpletSession): FtpletResult {
-        FtpServerService.logToFile("FTPLET onDisconnect: ${session.remoteAddress}")
+    override fun onDisconnect(session: FtpSession): FtpletResult {
+        FtpServerService.logToFile("FTPLET onDisconnect")
         return FtpletResult.DEFAULT
     }
 
-    override fun beforeCommand(session: FtpletSession, request: FtpRequest): FtpletResult {
+    override fun beforeCommand(session: FtpSession, request: FtpRequest): FtpletResult {
         FtpServerService.logToFile("FTPLET CMD: ${request.command} ${request.argument}")
         return FtpletResult.DEFAULT
     }
 
-    override fun afterCommand(session: FtpletSession, request: FtpRequest, reply: FtpReply): FtpletResult {
+    override fun afterCommand(session: FtpSession, request: FtpRequest, reply: FtpReply): FtpletResult {
         FtpServerService.logToFile("FTPLET RPL: ${request.command} -> ${reply.code}")
         return FtpletResult.DEFAULT
     }
