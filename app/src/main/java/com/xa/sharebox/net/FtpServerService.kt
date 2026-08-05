@@ -314,15 +314,29 @@ class FtpServerService : Service() {
         override fun doesExist(username: String): Boolean = users.containsKey(username)
 
         @Throws(FtpException::class)
-        override fun authenticate(authentication: Authentication): User? {
+        override fun authenticate(authentication: Authentication): User {
+            FtpServerService.logToFile("AUTH: called, type=${authentication.javaClass.name}")
             if (authentication is UsernamePasswordAuthentication) {
-                val user = users[authentication.username]
+                val username = authentication.username
+                val password = authentication.password
+                FtpServerService.logToFile("AUTH: user='$username' passLen=${password?.length ?: -1}")
+                val user = users[username]
                 if (user != null) {
                     val baseUser = user as BaseUser
-                    if (baseUser.password == authentication.password) return user
+                    FtpServerService.logToFile("AUTH: found user, stored passLen=${baseUser.password?.length ?: -1}")
+                    if (baseUser.password == password) {
+                        FtpServerService.logToFile("AUTH: SUCCESS")
+                        return user
+                    }
+                    FtpServerService.logToFile("AUTH: password mismatch")
+                } else {
+                    FtpServerService.logToFile("AUTH: user not found, users=${users.keys}")
                 }
+            } else {
+                FtpServerService.logToFile("AUTH: not UsernamePasswordAuthentication")
             }
-            return null
+            FtpServerService.logToFile("AUTH: FAILED, throwing FtpException")
+            throw FtpException("Authentication failed")
         }
 
         @Throws(FtpException::class)
