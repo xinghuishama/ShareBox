@@ -109,7 +109,23 @@ class FtpServerService : Service() {
             user.enabled = true
             user.authorities = listOf(WritePermission())
             user.maxIdleTime = 300
-            user.maxConcurrentLogins = 100
+            // BaseUser implements ConcurrentLoginUser, default maxConcurrentLogins=0 means "no logins allowed"
+            // Use reflection to set it since the setter might not be directly accessible in Kotlin
+            try {
+                val field = user.javaClass.getDeclaredField("maxConcurrentLogins")
+                field.isAccessible = true
+                field.setInt(user, 100)
+                logToFile("step3: maxConcurrentLogins set to 100")
+            } catch (e: Exception) {
+                logToFile("step3: maxConcurrentLogins reflection failed: ${e.message}")
+                try {
+                    val m = user.javaClass.getMethod("setMaxConcurrentLogins", Int::class.javaPrimitiveType)
+                    m.invoke(user, 100)
+                    logToFile("step3: maxConcurrentLogins set via setter")
+                } catch (e2: Exception) {
+                    logToFile("step3: maxConcurrentLogins setter failed: ${e2.message}")
+                }
+            }
             userManager.save(user)
             logToFile("step3: user saved: ${user.name} home=${user.homeDirectory}")
 
@@ -119,7 +135,13 @@ class FtpServerService : Service() {
                 anon.password = ""
                 anon.homeDirectory = config.sharedPath
                 anon.enabled = true
-                anon.maxConcurrentLogins = 100
+                try {
+                    val field = anon.javaClass.getDeclaredField("maxConcurrentLogins")
+                    field.isAccessible = true
+                    field.setInt(anon, 100)
+                } catch (e: Exception) {
+                    try { anon.javaClass.getMethod("setMaxConcurrentLogins", Int::class.javaPrimitiveType).invoke(anon, 100) } catch (_: Exception) {}
+                }
                 userManager.save(anon)
                 logToFile("step3: anonymous user saved")
             }
