@@ -32,6 +32,9 @@ interface FileSource {
     /** Create a remote directory. Returns true on success. */
     suspend fun mkdir(path: String): Boolean
 
+    /** Rename a remote file or directory. Returns true on success. */
+    suspend fun rename(fromPath: String, toPath: String): Boolean
+
     /** Close the connection and release resources. */
     fun close()
 }
