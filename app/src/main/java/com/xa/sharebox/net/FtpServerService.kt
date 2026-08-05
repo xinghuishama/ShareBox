@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Environment
 import android.os.IBinder
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -19,15 +20,27 @@ import com.xa.sharebox.util.FileUtils
 import org.apache.ftpserver.FtpServer
 import org.apache.ftpserver.FtpServerFactory
 import org.apache.ftpserver.ftplet.Authentication
+import org.apache.ftpserver.ftplet.DefaultFtplet
 import org.apache.ftpserver.ftplet.FtpException
+import org.apache.ftpserver.ftplet.FtpReply
+import org.apache.ftpserver.ftplet.FtpRequest
+import org.apache.ftpserver.ftplet.Ftplet
+import org.apache.ftpserver.ftplet.FtpletResult
+import org.apache.ftpserver.ftplet.FtpletSession
 import org.apache.ftpserver.ftplet.User
 import org.apache.ftpserver.ftplet.UserManager
 import org.apache.ftpserver.listener.ListenerFactory
+import org.apache.ftpserver.usermanager.UsernamePasswordAuthentication
 import org.apache.ftpserver.usermanager.impl.BaseUser
 import org.apache.ftpserver.usermanager.impl.WritePermission
 import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class FtpServerService : Service() {
     private var ftpServer: FtpServer? = null
@@ -61,18 +74,25 @@ class FtpServerService : Service() {
 
     private fun startFtpServer(config: FtpServerConfig) {
         try {
-            Log.i(TAG, "Starting FTP server on port ${config.port}...")
+            logToFile("======== START port=${config.port} user=${config.username} path=${config.sharedPath} ========")
+
             val sharedDir = File(config.sharedPath)
             if (!sharedDir.exists()) {
                 sharedDir.mkdirs()
+                logToFile("Created shared dir: ${sharedDir.absolutePath}")
             }
 
+            logToFile("step1: FtpServerFactory")
             val serverFactory = FtpServerFactory()
+
+            logToFile("step2: ListenerFactory port=${config.port}")
             val listenerFactory = ListenerFactory()
             listenerFactory.port = config.port
             listenerFactory.idleTimeout = 300
             serverFactory.addListener("default", listenerFactory.createListener())
+            logToFile("step2: listener OK")
 
+            logToFile("step3: InMemoryUserManager")
             val userManager = InMemoryUserManager()
             val user = BaseUser()
             user.name = config.username
@@ -81,6 +101,7 @@ class FtpServerService : Service() {
             user.enabled = true
             user.authorities = listOf(WritePermission())
             userManager.save(user)
+            logToFile("step3: user saved: ${user.name} home=${user.homeDirectory}")
 
             if (config.password.isEmpty()) {
                 val anon = BaseUser()
@@ -89,43 +110,69 @@ class FtpServerService : Service() {
                 anon.homeDirectory = config.sharedPath
                 anon.enabled = true
                 userManager.save(anon)
+                logToFile("step3: anonymous user saved")
             }
 
             serverFactory.userManager = userManager
 
+            logToFile("step4: DebugFtplet")
+            val ftplets = HashMap<String, Ftplet>()
+            ftplets["debug"] = DebugFtplet()
+            serverFactory.ftplets = ftplets
+            logToFile("step4: ftplet OK")
+
+            logToFile("step5: createServer")
             ftpServer = serverFactory.createServer()
+
+            logToFile("step6: start()")
             ftpServer?.start()
+            logToFile("step6: start() returned, no exception")
 
-            Thread.sleep(500)
-            if (!isPortListening(config.port)) {
-                throw RuntimeException("Port ${config.port} not listening")
-            }
+            // Self-test: check 220 banner
+            Thread {
+                try {
+                    Thread.sleep(1000)
+                    logToFile("SELFCHECK: connecting to 127.0.0.1:${config.port}...")
+                    val socket = Socket()
+                    socket.connect(InetSocketAddress("127.0.0.1", config.port), 3000)
+                    socket.soTimeout = 5000
+                    val input = socket.getInputStream()
+                    val buffer = ByteArray(512)
+                    val read = input.read(buffer)
+                    if (read > 0) {
+                        val banner = String(buffer, 0, read).trim()
+                        logToFile("SELFCHECK: banner='$banner'")
+                    } else {
+                        logToFile("SELFCHECK: NO DATA (0 bytes)")
+                    }
+                    socket.close()
+                } catch (e: Exception) {
+                    logToFile("SELFCHECK FAILED: ${e.javaClass.simpleName}: ${e.message}")
+                }
+            }.start()
 
-            Log.i(TAG, "FTP server started on port ${config.port}")
+            logToFile("======== FTP SERVER STARTED port=${config.port} ========")
             updateNotification(config, "运行中")
         } catch (e: Throwable) {
-            Log.e(TAG, "Failed to start FTP server", e)
+            logToFile("!!! START FAILED !!!")
+            logToFile("${e.javaClass.name}: ${e.message}")
+            try {
+                val sw = StringWriter()
+                e.printStackTrace(PrintWriter(sw))
+                logToFile("STACKTRACE:\n$sw")
+            } catch (_: Exception) {}
             updateNotification(config, "启动失败: ${e.message}")
             stopSelf()
         }
     }
 
-    private fun isPortListening(port: Int): Boolean {
-        return try {
-            Socket().use { socket ->
-                socket.connect(InetSocketAddress("127.0.0.1", port), 1000)
-                true
-            }
-        } catch (e: Throwable) {
-            false
-        }
-    }
-
     private fun stopFtpServer() {
+        logToFile("======== STOP ========")
         try {
             ftpServer?.stop()
+            logToFile("server.stop() OK")
         } catch (e: Throwable) {
-            Log.e(TAG, "Error stopping server", e)
+            logToFile("stop error: ${e.message}")
         }
         ftpServer = null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -197,6 +244,22 @@ class FtpServerService : Service() {
         const val EXTRA_PASS = "pass"
         const val EXTRA_PATH = "path"
 
+        private val logFile: File by lazy {
+            File(Environment.getExternalStorageDirectory(), "Download/ftp_debug.log")
+        }
+
+        fun logToFile(msg: String) {
+            val ts = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
+            val line = "[$ts] $msg"
+            Log.i(TAG, line)
+            try {
+                logFile.parentFile?.mkdirs()
+                logFile.appendText("$line\n")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to write log file", e)
+            }
+        }
+
         fun start(context: Context, config: FtpServerConfig): Boolean {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS)
@@ -252,10 +315,10 @@ class FtpServerService : Service() {
 
         @Throws(FtpException::class)
         override fun authenticate(authentication: Authentication): User? {
-            if (authentication is org.apache.ftpserver.usermanager.UsernamePasswordAuthentication) {
+            if (authentication is UsernamePasswordAuthentication) {
                 val user = users[authentication.username]
                 if (user != null) {
-                    val baseUser = user as org.apache.ftpserver.usermanager.impl.BaseUser
+                    val baseUser = user as BaseUser
                     if (baseUser.password == authentication.password) return user
                 }
             }
@@ -267,5 +330,35 @@ class FtpServerService : Service() {
 
         @Throws(FtpException::class)
         override fun isAdmin(username: String): Boolean = false
+    }
+}
+
+class DebugFtplet : DefaultFtplet() {
+    override fun init(context: org.apache.ftpserver.ftplet.FtpletContext?) {
+        FtpServerService.logToFile("FTPLET init")
+    }
+
+    override fun destroy() {
+        FtpServerService.logToFile("FTPLET destroy")
+    }
+
+    override fun onConnect(session: FtpletSession): FtpletResult {
+        FtpServerService.logToFile("FTPLET onConnect: ${session.remoteAddress}")
+        return FtpletResult.DEFAULT
+    }
+
+    override fun onDisconnect(session: FtpletSession): FtpletResult {
+        FtpServerService.logToFile("FTPLET onDisconnect: ${session.remoteAddress}")
+        return FtpletResult.DEFAULT
+    }
+
+    override fun beforeCommand(session: FtpletSession, request: FtpRequest): FtpletResult {
+        FtpServerService.logToFile("FTPLET CMD: ${request.command} ${request.argument}")
+        return FtpletResult.DEFAULT
+    }
+
+    override fun afterCommand(session: FtpletSession, request: FtpRequest, reply: FtpReply): FtpletResult {
+        FtpServerService.logToFile("FTPLET RPL: ${request.command} -> ${reply.code}")
+        return FtpletResult.DEFAULT
     }
 }

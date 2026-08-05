@@ -3,77 +3,35 @@ package com.xa.sharebox.net
 import com.xa.sharebox.model.FileEntry
 import java.io.File
 
+/**
+ * Common interface for remote file sources (FTP, SMB).
+ * Used by MainVM for all remote file operations.
+ */
 interface FileSource {
+    /** Short label shown in the top bar, e.g. "FTP 192.168.1.100:21". */
     val displayName: String
+
+    /** Last connection error message (empty if none). */
     val connectError: String
 
+    /** Connect / login to the remote server. Returns true on success. */
     suspend fun connect(): Boolean
+
+    /** List files in the given remote directory path. */
     suspend fun list(path: String): List<FileEntry>
-    suspend fun mkdir(path: String): Boolean
+
+    /** Download a remote file to a local path, reporting progress. */
+    suspend fun download(remotePath: String, localFile: File, progress: (Long, Long) -> Unit)
+
+    /** Upload a local file to a remote path, reporting progress. */
+    suspend fun upload(localFile: File, remotePath: String, progress: (Long, Long) -> Unit)
+
+    /** Delete a remote file or directory. Returns true on success. */
     suspend fun delete(path: String): Boolean
-    suspend fun rename(from: String, to: String): Boolean
-    suspend fun download(remotePath: String, localFile: File, onProgress: (Long, Long) -> Unit)
-    suspend fun upload(localFile: File, remotePath: String, onProgress: (Long, Long) -> Unit)
+
+    /** Create a remote directory. Returns true on success. */
+    suspend fun mkdir(path: String): Boolean
+
+    /** Close the connection and release resources. */
     fun close()
-}
-
-class LocalFileSource(private val rootPath: String) : FileSource {
-    override val displayName: String = "本地存储"
-    override val connectError: String = ""
-
-    override suspend fun connect(): Boolean = true
-
-    override suspend fun list(path: String): List<FileEntry> {
-        val dir = if (path.isEmpty() || path == "/") File(rootPath) else File(path)
-        if (!dir.exists() || !dir.isDirectory) return emptyList()
-        return dir.listFiles()
-            ?.filter { it.name != "." && it.name != ".." }
-            ?.map {
-                FileEntry(
-                    name = it.name,
-                    path = it.absolutePath,
-                    isDirectory = it.isDirectory,
-                    size = if (it.isFile) it.length() else 0,
-                    lastModified = it.lastModified()
-                )
-            }
-            ?.sorted()
-            ?: emptyList()
-    }
-
-    override suspend fun mkdir(path: String): Boolean = File(path).mkdirs()
-    override suspend fun delete(path: String): Boolean {
-        val f = File(path)
-        if (f.isDirectory) f.listFiles()?.forEach { delete(it.absolutePath) }
-        return f.delete()
-    }
-    override suspend fun rename(from: String, to: String): Boolean = File(from).renameTo(File(to))
-
-    override suspend fun download(remotePath: String, localFile: File, onProgress: (Long, Long) -> Unit) {
-        val src = File(remotePath)
-        if (src.isDirectory) {
-            com.xa.sharebox.util.FileUtils.copyDirectory(src, localFile)
-        } else {
-            localFile.parentFile?.mkdirs()
-            src.inputStream().use { input ->
-                localFile.outputStream().use { output ->
-                    val buffer = ByteArray(8192)
-                    var read: Int
-                    var total = 0L
-                    val size = src.length()
-                    while (input.read(buffer).also { read = it } > 0) {
-                        output.write(buffer, 0, read)
-                        total += read
-                        onProgress(total, size)
-                    }
-                }
-            }
-        }
-    }
-
-    override suspend fun upload(localFile: File, remotePath: String, onProgress: (Long, Long) -> Unit) {
-        download(localFile.absolutePath, File(remotePath), onProgress)
-    }
-
-    override fun close() {}
 }
