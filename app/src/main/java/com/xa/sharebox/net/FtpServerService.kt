@@ -108,6 +108,8 @@ class FtpServerService : Service() {
             user.homeDirectory = config.sharedPath
             user.enabled = true
             user.authorities = listOf(WritePermission())
+            user.maxIdleTime = 300
+            user.maxConcurrentLogins = 100
             userManager.save(user)
             logToFile("step3: user saved: ${user.name} home=${user.homeDirectory}")
 
@@ -117,6 +119,7 @@ class FtpServerService : Service() {
                 anon.password = ""
                 anon.homeDirectory = config.sharedPath
                 anon.enabled = true
+                anon.maxConcurrentLogins = 100
                 userManager.save(anon)
                 logToFile("step3: anonymous user saved")
             }
