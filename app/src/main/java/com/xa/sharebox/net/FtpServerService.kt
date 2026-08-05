@@ -248,6 +248,13 @@ class FtpServerService : Service() {
             File(Environment.getExternalStorageDirectory(), "Download/ftp_debug.log")
         }
 
+        init {
+            // Configure slf4j-simple to write to our log file
+            System.setProperty("org.slf4j.simpleLogger.logFile", "/storage/emulated/0/Download/ftp_slf4j.log")
+            System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "debug")
+            System.setProperty("org.slf4j.simpleLogger.showDateTime", "true")
+        }
+
         fun logToFile(msg: String) {
             val ts = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
             val line = "[$ts] $msg"
@@ -295,7 +302,11 @@ class FtpServerService : Service() {
         private val users = mutableMapOf<String, User>()
 
         @Throws(FtpException::class)
-        override fun getUserByName(username: String): User? = users[username]
+        override fun getUserByName(username: String): User? {
+            val user = users[username]
+            FtpServerService.logToFile("getUserByName: '$username' -> ${if (user != null) "found" else "null"}")
+            return user
+        }
 
         @Throws(FtpException::class)
         override fun getAllUserNames(): Array<String> = users.keys.toTypedArray()

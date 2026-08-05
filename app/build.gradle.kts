@@ -69,5 +69,5 @@ dependencies {
     implementation("org.apache.ftpserver:ftpserver-core:1.1.4") {
         exclude(group = "org.slf4j")
     }
-    implementation("org.slf4j:slf4j-nop:1.7.36")
+    implementation("org.slf4j:slf4j-simple:1.7.36")
 }
