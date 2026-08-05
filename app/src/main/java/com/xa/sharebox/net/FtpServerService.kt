@@ -102,46 +102,27 @@ class FtpServerService : Service() {
 
             logToFile("step3: InMemoryUserManager")
             val userManager = InMemoryUserManager()
-            val user = BaseUser()
+            // Use anonymous subclass to override getMaxConcurrentLogins() (default 0 = no logins allowed)
+            val user = object : BaseUser() {
+                override fun getMaxConcurrentLogins(): Int = 100
+            }
             user.name = config.username
             user.password = config.password
             user.homeDirectory = config.sharedPath
             user.enabled = true
             user.authorities = listOf(WritePermission())
             user.maxIdleTime = 300
-            // BaseUser implements ConcurrentLoginUser, default maxConcurrentLogins=0 means "no logins allowed"
-            // Use reflection to set it since the setter might not be directly accessible in Kotlin
-            try {
-                val field = user.javaClass.getDeclaredField("maxConcurrentLogins")
-                field.isAccessible = true
-                field.setInt(user, 100)
-                logToFile("step3: maxConcurrentLogins set to 100")
-            } catch (e: Exception) {
-                logToFile("step3: maxConcurrentLogins reflection failed: ${e.message}")
-                try {
-                    val m = user.javaClass.getMethod("setMaxConcurrentLogins", Int::class.javaPrimitiveType)
-                    m.invoke(user, 100)
-                    logToFile("step3: maxConcurrentLogins set via setter")
-                } catch (e2: Exception) {
-                    logToFile("step3: maxConcurrentLogins setter failed: ${e2.message}")
-                }
-            }
             userManager.save(user)
             logToFile("step3: user saved: ${user.name} home=${user.homeDirectory}")
 
             if (config.password.isEmpty()) {
-                val anon = BaseUser()
+                val anon = object : BaseUser() {
+                    override fun getMaxConcurrentLogins(): Int = 100
+                }
                 anon.name = "anonymous"
                 anon.password = ""
                 anon.homeDirectory = config.sharedPath
                 anon.enabled = true
-                try {
-                    val field = anon.javaClass.getDeclaredField("maxConcurrentLogins")
-                    field.isAccessible = true
-                    field.setInt(anon, 100)
-                } catch (e: Exception) {
-                    try { anon.javaClass.getMethod("setMaxConcurrentLogins", Int::class.javaPrimitiveType).invoke(anon, 100) } catch (_: Exception) {}
-                }
                 userManager.save(anon)
                 logToFile("step3: anonymous user saved")
             }
