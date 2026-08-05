@@ -48,6 +48,14 @@ class FtpServerService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Redirect System.err to capture SLF4J/simpleLogger output
+        try {
+            val slf4jFile = File(Environment.getExternalStorageDirectory(), "Download/ftp_slf4j.log")
+            slf4jFile.parentFile?.mkdirs()
+            System.setErr(java.io.PrintStream(java.io.FileOutputStream(slf4jFile, true)))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to redirect stderr", e)
+        }
         when (intent?.action) {
             ACTION_START -> {
                 val config = FtpServerConfig(
@@ -84,6 +92,14 @@ class FtpServerService : Service() {
 
             logToFile("step1: FtpServerFactory")
             val serverFactory = FtpServerFactory()
+
+            // Explicit ConnectionConfig: all limits = 0 (unlimited) to skip internal checks
+            val ccFactory = org.apache.ftpserver.config.ConnectionConfigFactory()
+            ccFactory.maxLogins = 0
+            ccFactory.maxConnections = 0
+            ccFactory.maxConnectionsPerIp = 0
+            serverFactory.connectionConfig = ccFactory.createConnectionConfig()
+            logToFile("step1b: ConnectionConfig set (all unlimited)")
 
             logToFile("step2: ListenerFactory port=${config.port}")
             val listenerFactory = ListenerFactory()
