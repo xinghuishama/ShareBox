@@ -103,26 +103,29 @@ class FtpServerService : Service() {
             logToFile("step3: InMemoryUserManager")
             val userManager = InMemoryUserManager()
             // Use anonymous subclass to override getMaxConcurrentLogins() (default 0 = no logins allowed)
-            val user = object : BaseUser() {
-                override fun getMaxConcurrentLogins(): Int = 100
-            }
+            val user = object : BaseUser() {}
             user.name = config.username
             user.password = config.password
             user.homeDirectory = config.sharedPath
             user.enabled = true
-            user.authorities = listOf(WritePermission())
+            user.authorities = listOf(
+                WritePermission(),
+                org.apache.ftpserver.usermanager.impl.ConcurrentLoginPermission(100, 100)
+            )
             user.maxIdleTime = 300
             userManager.save(user)
             logToFile("step3: user saved: ${user.name} home=${user.homeDirectory}")
 
             if (config.password.isEmpty()) {
-                val anon = object : BaseUser() {
-                    override fun getMaxConcurrentLogins(): Int = 100
-                }
+                val anon = object : BaseUser() {}
                 anon.name = "anonymous"
                 anon.password = ""
                 anon.homeDirectory = config.sharedPath
                 anon.enabled = true
+                anon.authorities = listOf(
+                    WritePermission(),
+                    org.apache.ftpserver.usermanager.impl.ConcurrentLoginPermission(100, 100)
+                )
                 userManager.save(anon)
                 logToFile("step3: anonymous user saved")
             }
