@@ -330,6 +330,102 @@ fun RemoteScreen(vm: MainVM, state: MainVM.UiState, isSmb: Boolean) {
             onDismiss = { vm.dismissAddServerDialog() }
         )
     }
+
+    // SMB share picker dialog
+    if (state.showSmbShareDialog && isSmb) {
+        SmbSharePickerDialog(
+            host = state.smbShareHost,
+            port = state.smbSharePort,
+            shares = state.smbShareList,
+            loading = state.smbShareLoading,
+            onListShares = { user, pass -> vm.listSmbShares(state.smbShareHost, state.smbSharePort, user, pass) },
+            onPickShare = { shareName -> vm.connectSmbShare(shareName) },
+            onDismiss = { vm.dismissSmbShareDialog() }
+        )
+    }
+}
+
+@Composable
+fun SmbSharePickerDialog(
+    host: String,
+    port: Int,
+    shares: List<com.xa.sharebox.net.SmbShareLister.ShareInfo>,
+    loading: Boolean,
+    onListShares: (String, String) -> Unit,
+    onPickShare: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var user by remember { mutableStateOf("") }
+    var pass by remember { mutableStateOf("") }
+    var hasLoaded by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("SMB 共享 — $host") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = user, onValueChange = { user = it; hasLoaded = false },
+                    label = { Text("用户名 (可空)") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = pass, onValueChange = { pass = it; hasLoaded = false },
+                    label = { Text("密码 (可空)") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(
+                    onClick = { onListShares(user, pass); hasLoaded = true },
+                    enabled = !loading,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (loading) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("列出共享")
+                    }
+                }
+                if (shares.isNotEmpty()) {
+                    Text("发现 ${shares.size} 个共享：",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary)
+                    shares.forEach { share ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onPickShare(share.name) }
+                                .padding(vertical = 8.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Folder,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(share.name, style = MaterialTheme.typography.bodyMedium)
+                                if (share.comment.isNotEmpty()) {
+                                    Text(share.comment,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                } else if (hasLoaded && !loading) {
+                    Text("未发现共享，或需要认证",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
 }
 
 @Composable

@@ -20,6 +20,7 @@ import com.xa.sharebox.net.FileSource
 import com.xa.sharebox.net.FtpFileSource
 import com.xa.sharebox.net.LocalFileSource
 import com.xa.sharebox.net.SmbFileSource
+import com.xa.sharebox.net.SmbShareLister
 import com.xa.sharebox.util.FileUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -75,7 +76,15 @@ class MainVM(app: Application) : AndroidViewModel(app) {
         val isScanning: Boolean = false,
         val scanProgress: String = "",
         // Pre-filled add server dialog (from discovered device)
-        val prefillHost: String = ""
+        val prefillHost: String = "",
+        // SMB share listing
+        val smbShareList: List<SmbShareLister.ShareInfo> = emptyList(),
+        val smbShareLoading: Boolean = false,
+        val smbShareHost: String = "",
+        val smbSharePort: Int = 445,
+        val smbShareUser: String = "",
+        val smbSharePass: String = "",
+        val showSmbShareDialog: Boolean = false
     )
 
     /** Tracks a file downloaded to cache for viewing/editing. */
@@ -539,11 +548,67 @@ class MainVM(app: Application) : AndroidViewModel(app) {
 
     /** Start adding a server from a discovered device — pre-fills the dialog. */
     fun connectDiscovered(device: DiscoveredDevice) {
-        _state.value = _state.value.copy(
-            showAddServerDialog = true,
-            editingServerType = device.type,
-            prefillHost = device.ip
+        if (device.type == ServerType.SMB) {
+            // For SMB, list shares first
+            _state.value = _state.value.copy(
+                showSmbShareDialog = true,
+                smbShareHost = device.ip,
+                smbSharePort = device.port,
+                smbShareUser = "",
+                smbSharePass = "",
+                smbShareList = emptyList(),
+                smbShareLoading = false
+            )
+        } else {
+            _state.value = _state.value.copy(
+                showAddServerDialog = true,
+                editingServerType = device.type,
+                prefillHost = device.ip
+            )
+        }
+    }
+
+    /** Enumerate SMB shares on a host. */
+    fun listSmbShares(host: String, port: Int, user: String, pass: String) {
+        _state.value = _state.value.copy(smbShareLoading = true, smbShareList = emptyList())
+        viewModelScope.launch {
+            try {
+                val shares = withContext(Dispatchers.IO) {
+                    SmbShareLister.listShares(host, port, user, pass)
+                }
+                _state.value = _state.value.copy(
+                    smbShareLoading = false,
+                    smbShareList = shares,
+                    smbShareUser = user,
+                    smbSharePass = pass
+                )
+            } catch (e: Throwable) {
+                _state.value = _state.value.copy(
+                    smbShareLoading = false,
+                    message = "枚举共享失败: ${e.javaClass.simpleName}: ${e.message}"
+                )
+            }
+        }
+    }
+
+    /** Connect to a specific SMB share from the list. */
+    fun connectSmbShare(shareName: String) {
+        val s = _state.value
+        val config = ServerConfig(
+            name = "${s.smbShareHost}\\$shareName",
+            type = ServerType.SMB,
+            host = s.smbShareHost,
+            port = s.smbSharePort,
+            username = s.smbShareUser,
+            password = s.smbSharePass,
+            share = shareName
         )
+        _state.value = _state.value.copy(showSmbShareDialog = false)
+        connectRemote(config)
+    }
+
+    fun dismissSmbShareDialog() {
+        _state.value = _state.value.copy(showSmbShareDialog = false)
     }
 
     private fun getLocalIpv4(): String? {
