@@ -78,28 +78,28 @@ object SmbShareLister {
 
     private fun buildBindRequest(): ByteArray {
         val body = ByteBuffer.allocate(56).order(ByteOrder.LITTLE_ENDIAN)
-        body.putShort(4280)   // max transmit fragment
-        body.putShort(4280)   // max receive fragment
+        body.putShort(4280.toShort())   // max transmit fragment
+        body.putShort(4280.toShort())   // max receive fragment
         body.putInt(0)        // assoc group ID
         body.putInt(1)        // num context elements
-        body.putShort(0)      // context ID
-        body.putShort(1)      // num transfer syntaxes
+        body.putShort(0.toShort())      // context ID
+        body.putShort(1.toShort())      // num transfer syntaxes
         // SRVSVC UUID: 4b324fc8-1670-01d3-1278-5a47bf6ee188
         body.putInt(0xC84F324B.toInt())
-        body.putShort(0x0116)
-        body.putShort(0x1278)
+        body.putShort(0x0116.toShort())
+        body.putShort(0x1278.toShort())
         body.put(0x5A.toByte()); body.put(0x47.toByte())
         body.put(0xBF.toByte()); body.put(0x6E.toByte())
         body.put(0xE1.toByte()); body.put(0x88.toByte())
-        body.putShort(3); body.putShort(0)   // interface version 3.0
+        body.putShort(3.toShort()); body.putShort(0.toShort())   // interface version 3.0
         // NDR transfer syntax: 8a885d04-1ceb-106c-921f-00c04fc2c6f3
         body.putInt(0x045D888A.toInt())
-        body.putShort(0x1C1E)
-        body.putShort(0x9210)
+        body.putShort(0x1C1E.toShort())
+        body.putShort(0x9210.toShort())
         body.put(0x00.toByte()); body.put(0xC0.toByte())
         body.put(0x4F.toByte()); body.put(0xC2.toByte())
         body.put(0xC6.toByte()); body.put(0xF3.toByte())
-        body.putShort(2); body.putShort(0)   // transfer syntax version 2.0
+        body.putShort(2.toShort()); body.putShort(0.toShort())   // transfer syntax version 2.0
 
         val bodyBytes = body.array()
         return buildDcerpcHeader(0x0B, bodyBytes.size, 1) + bodyBytes
@@ -133,8 +133,8 @@ object SmbShareLister {
         // Request PDU header: alloc_hint(4) + context_id(2) + opnum(2) = 8 bytes
         val reqHeader = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
         reqHeader.putInt(paramBytes.size)   // alloc hint
-        reqHeader.putShort(0)               // context id
-        reqHeader.putShort(15)              // opnum: NetShareEnumAll
+        reqHeader.putShort(0.toShort())               // context id
+        reqHeader.putShort(15.toShort())              // opnum: NetShareEnumAll
 
         val bodyBytes = reqHeader.array() + paramBytes
         return buildDcerpcHeader(0x00, bodyBytes.size, 2) + bodyBytes
@@ -147,7 +147,7 @@ object SmbShareLister {
         h.put(0x03)               // flags: first+last fragment
         h.put(0x10); h.put(0); h.put(0); h.put(0)  // data rep
         h.putShort((bodyLen + 16).toShort())   // frag length
-        h.putShort(0)             // auth length
+        h.putShort(0.toShort())             // auth length
         h.putInt(callId)          // call ID
         return h.array()
     }

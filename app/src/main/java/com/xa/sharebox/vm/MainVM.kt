@@ -604,7 +604,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
             share = shareName
         )
         _state.value = _state.value.copy(showSmbShareDialog = false)
-        connectRemote(config)
+        connectServer(config)
     }
 
     fun dismissSmbShareDialog() {
