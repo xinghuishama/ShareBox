@@ -37,15 +37,20 @@ object SmbShareLister {
 
         val client = SMBClient(config)
         try {
+            android.util.Log.i("SmbShareLister", "Connecting to $host:$port user='$username'")
             val connection = client.connect(host, port)
+            android.util.Log.i("SmbShareLister", "Connected, authenticating...")
             val auth = if (username.isBlank() && password.isBlank()) {
                 AuthenticationContext.anonymous()
             } else {
                 AuthenticationContext(username, password.toCharArray(), null)
             }
             val session = connection.authenticate(auth)
+            android.util.Log.i("SmbShareLister", "Authenticated OK")
 
             val pipeShare = session.connectShare("IPC$") as PipeShare
+            android.util.Log.i("SmbShareLister", "Connected to IPC$")
+
             val pipe = pipeShare.open(
                 "srvsvc",
                 SMB2ImpersonationLevel.Impersonation,
@@ -55,25 +60,80 @@ object SmbShareLister {
                 SMB2CreateDisposition.FILE_OPEN,
                 emptySet()
             )
+            android.util.Log.i("SmbShareLister", "Opened srvsvc pipe")
 
             try {
                 // DCERPC Bind to SRVSVC interface
                 val bindReq = buildBindRequest()
-                pipe.transact(bindReq)
+                android.util.Log.i("SmbShareLister", "Sending Bind request (${bindReq.size} bytes)")
+                val bindResp = pipe.transact(bindReq)
+                android.util.Log.i("SmbShareLister", "Bind response: ${bindResp.size} bytes")
 
                 // NetShareEnumAll (opnum 15)
                 val enumReq = buildNetShareEnumAllRequest()
+                android.util.Log.i("SmbShareLister", "Sending NetShareEnumAll (${enumReq.size} bytes)")
                 val enumResp = pipe.transact(enumReq)
+                android.util.Log.i("SmbShareLister", "EnumAll response: ${enumResp.size} bytes")
 
-                return parseShareEnumResponse(enumResp)
+                val shares = parseShareEnumResponse(enumResp)
+                android.util.Log.i("SmbShareLister", "Parsed ${shares.size} shares")
+                return shares
             } finally {
                 pipe.close()
             }
         } catch (e: Exception) {
-            return emptyList()
+            android.util.Log.e("SmbShareLister", "DCERPC failed, trying fallback: ${e.message}")
+            // Fallback: try connecting to common share names
+            return tryConnectCommonShares(host, port, username, password)
         } finally {
             try { client.close() } catch (_: Exception) {}
         }
+    }
+
+    /**
+     * Fallback: try to tree-connect to common share names.
+     * Not as good as NetShareEnumAll, but works when DCERPC is unavailable.
+     */
+    private fun tryConnectCommonShares(
+        host: String, port: Int, username: String, password: String
+    ): List<ShareInfo> {
+        val config = SmbConfig.builder()
+            .withTimeout(5, TimeUnit.SECONDS)
+            .withSoTimeout(5, TimeUnit.SECONDS)
+            .build()
+        val client = SMBClient(config)
+        val shares = mutableListOf<ShareInfo>()
+        try {
+            val connection = client.connect(host, port)
+            val auth = if (username.isBlank() && password.isBlank()) {
+                AuthenticationContext.anonymous()
+            } else {
+                AuthenticationContext(username, password.toCharArray(), null)
+            }
+            val session = connection.authenticate(auth)
+
+            val candidates = listOf("IPC$", "C$", "D$", "E$", "Public", "Share", "Shares",
+                "Shared", "Data", "Files", "Documents", "Media", "Home", "Homes",
+                "ADMIN$", "print$", "sda", "sdb", "usb", "sdcard", "nfs")
+
+            for (name in candidates) {
+                try {
+                    session.connectShare(name)
+                    shares.add(ShareInfo(name, 0, ""))
+                    android.util.Log.i("SmbShareLister", "Found share: $name")
+                    // Don't close — we might need the session for next candidate
+                } catch (e: Exception) {
+                    // Share doesn't exist or access denied — skip
+                }
+            }
+            session.close()
+            connection.close()
+        } catch (e: Exception) {
+            android.util.Log.e("SmbShareLister", "Fallback failed: ${e.message}")
+        } finally {
+            try { client.close() } catch (_: Exception) {}
+        }
+        return shares
     }
 
     private fun buildBindRequest(): ByteArray {
