@@ -79,17 +79,26 @@ object SmbShareLister {
                 log("Sending Bind request (${bindReq.size} bytes)")
                 pipe.write(bindReq)
                 val bindBuf = ByteArray(1024)
-                val bindRead = pipe.read(bindBuf)
-                log("Bind response: ${bindRead?.size ?: 0} bytes")
+                val bindN = pipe.read(bindBuf)
+                log("Bind response: $bindN bytes")
+                if (bindN < 16) {
+                    log("Bind response too short, aborting")
+                    return emptyList()
+                }
 
                 // NetShareEnumAll (opnum 15)
                 val enumReq = buildNetShareEnumAllRequest(host)
                 log("Sending NetShareEnumAll (${enumReq.size} bytes)")
                 pipe.write(enumReq)
                 val enumBuf = ByteArray(8192)
-                val enumResp = pipe.read(enumBuf)
-                log("EnumAll response: ${enumResp?.size ?: 0} bytes")
+                val enumN = pipe.read(enumBuf)
+                log("EnumAll response: $enumN bytes")
+                if (enumN < 16) {
+                    log("EnumAll response too short, aborting")
+                    return emptyList()
+                }
 
+                val enumResp = enumBuf.copyOfRange(0, enumN)
                 val shares = parseShareEnumResponse(enumResp)
                 log("Parsed ${shares.size} shares: ${shares.joinToString { it.name }}")
                 return shares.filter { it.name != "IPC$" }
