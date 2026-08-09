@@ -24,12 +24,23 @@ object SmbShareLister {
         val comment: String
     )
 
+    private val logFile = java.io.File("/storage/emulated/0/Download/smb_debug.log")
+
+    private fun log(msg: String) {
+        try {
+            android.util.Log.i("SmbShareLister", msg)
+            logFile.parentFile?.mkdirs()
+            logFile.appendText("[${System.currentTimeMillis()}] $msg\n")
+        } catch (_: Exception) {}
+    }
+
     fun listShares(
         host: String,
         port: Int = 445,
         username: String,
         password: String
     ): List<ShareInfo> {
+        log("======== listShares host=$host port=$port user='$username' ========")
         val config = SmbConfig.builder()
             .withTimeout(15, TimeUnit.SECONDS)
             .withSoTimeout(15, TimeUnit.SECONDS)
@@ -37,19 +48,19 @@ object SmbShareLister {
 
         val client = SMBClient(config)
         try {
-            android.util.Log.i("SmbShareLister", "Connecting to $host:$port user='$username'")
+            log("Connecting to $host:$port")
             val connection = client.connect(host, port)
-            android.util.Log.i("SmbShareLister", "Connected, authenticating...")
+            log("Connected, authenticating...")
             val auth = if (username.isBlank() && password.isBlank()) {
                 AuthenticationContext.anonymous()
             } else {
                 AuthenticationContext(username, password.toCharArray(), null)
             }
             val session = connection.authenticate(auth)
-            android.util.Log.i("SmbShareLister", "Authenticated OK")
+            log("Authenticated OK")
 
             val pipeShare = session.connectShare("IPC$") as PipeShare
-            android.util.Log.i("SmbShareLister", "Connected to IPC$")
+            log("Connected to IPC$")
 
             val pipe = pipeShare.open(
                 "srvsvc",
@@ -60,29 +71,29 @@ object SmbShareLister {
                 SMB2CreateDisposition.FILE_OPEN,
                 emptySet()
             )
-            android.util.Log.i("SmbShareLister", "Opened srvsvc pipe")
+            log("Opened srvsvc pipe")
 
             try {
                 // DCERPC Bind to SRVSVC interface
                 val bindReq = buildBindRequest()
-                android.util.Log.i("SmbShareLister", "Sending Bind request (${bindReq.size} bytes)")
+                log("Sending Bind request (${bindReq.size} bytes)")
                 val bindResp = pipe.transact(bindReq)
-                android.util.Log.i("SmbShareLister", "Bind response: ${bindResp.size} bytes")
+                log("Bind response: ${bindResp?.size ?: 0} bytes")
 
                 // NetShareEnumAll (opnum 15)
                 val enumReq = buildNetShareEnumAllRequest()
-                android.util.Log.i("SmbShareLister", "Sending NetShareEnumAll (${enumReq.size} bytes)")
+                log("Sending NetShareEnumAll (${enumReq.size} bytes)")
                 val enumResp = pipe.transact(enumReq)
-                android.util.Log.i("SmbShareLister", "EnumAll response: ${enumResp.size} bytes")
+                log("EnumAll response: ${enumResp?.size ?: 0} bytes")
 
                 val shares = parseShareEnumResponse(enumResp)
-                android.util.Log.i("SmbShareLister", "Parsed ${shares.size} shares")
-                return shares
+                log("Parsed ${shares.size} shares: ${shares.joinToString { it.name }}")
+                return shares.filter { it.name != "IPC$" }
             } finally {
                 pipe.close()
             }
         } catch (e: Exception) {
-            android.util.Log.e("SmbShareLister", "DCERPC failed, trying fallback: ${e.message}")
+            log("DCERPC FAILED: ${e.javaClass.simpleName}: ${e.message}")
             // Fallback: try connecting to common share names
             return tryConnectCommonShares(host, port, username, password)
         } finally {
@@ -97,6 +108,7 @@ object SmbShareLister {
     private fun tryConnectCommonShares(
         host: String, port: Int, username: String, password: String
     ): List<ShareInfo> {
+        log("Fallback: trying common share names")
         val config = SmbConfig.builder()
             .withTimeout(5, TimeUnit.SECONDS)
             .withSoTimeout(5, TimeUnit.SECONDS)
@@ -112,16 +124,23 @@ object SmbShareLister {
             }
             val session = connection.authenticate(auth)
 
-            val candidates = listOf("IPC$", "C$", "D$", "E$", "Public", "Share", "Shares",
+            // Try common share names (skip IPC$ — it's a pipe, not a disk share)
+            val candidates = listOf("C$", "D$", "E$", "F$", "Public", "Share", "Shares",
                 "Shared", "Data", "Files", "Documents", "Media", "Home", "Homes",
-                "ADMIN$", "print$", "sda", "sdb", "usb", "sdcard", "nfs")
+                "ADMIN$", "print$",
+                // Router/NAS specific
+                "sda", "sda1", "sdb", "sdb1", "usb", "usb1", "sdcard",
+                "nfs", "ftp", "download", "cloud",
+                // Common NAS names
+                "volume1", "volume2", "DataVolume", "Storage",
+                "photo", "video", "music", "backup")
 
             for (name in candidates) {
                 try {
-                    session.connectShare(name)
+                    val share = session.connectShare(name)
                     shares.add(ShareInfo(name, 0, ""))
-                    android.util.Log.i("SmbShareLister", "Found share: $name")
-                    // Don't close — we might need the session for next candidate
+                    log("Fallback found: $name")
+                    share.close()
                 } catch (e: Exception) {
                     // Share doesn't exist or access denied — skip
                 }
@@ -129,7 +148,7 @@ object SmbShareLister {
             session.close()
             connection.close()
         } catch (e: Exception) {
-            android.util.Log.e("SmbShareLister", "Fallback failed: ${e.message}")
+            log("Fallback FAILED: ${e.javaClass.simpleName}: ${e.message}")
         } finally {
             try { client.close() } catch (_: Exception) {}
         }
