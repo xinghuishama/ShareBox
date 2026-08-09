@@ -77,28 +77,25 @@ object SmbShareLister {
                 // DCERPC Bind to SRVSVC interface
                 val bindReq = buildBindRequest()
                 log("Sending Bind request (${bindReq.size} bytes)")
-                pipe.write(bindReq)
-                val bindBuf = ByteArray(1024)
-                val bindN = pipe.read(bindBuf)
-                log("Bind response: $bindN bytes")
-                if (bindN < 16) {
+                val bindResp = pipe.transact(bindReq)
+                log("Bind response: ${bindResp?.size ?: 0} bytes")
+                if (bindResp == null || bindResp.size < 16) {
                     log("Bind response too short, aborting")
                     return emptyList()
                 }
+                // Log Bind result byte (offset 31 in v1, or check type field at offset 2)
+                log("Bind type=0x${String.format("%02x", bindResp[2])} flags=0x${String.format("%02x", bindResp[3])}")
 
                 // NetShareEnumAll (opnum 15)
                 val enumReq = buildNetShareEnumAllRequest(host)
                 log("Sending NetShareEnumAll (${enumReq.size} bytes)")
-                pipe.write(enumReq)
-                val enumBuf = ByteArray(8192)
-                val enumN = pipe.read(enumBuf)
-                log("EnumAll response: $enumN bytes")
-                if (enumN < 16) {
+                val enumResp = pipe.transact(enumReq)
+                log("EnumAll response: ${enumResp?.size ?: 0} bytes")
+                if (enumResp == null || enumResp.size < 16) {
                     log("EnumAll response too short, aborting")
                     return emptyList()
                 }
 
-                val enumResp = enumBuf.copyOfRange(0, enumN)
                 val shares = parseShareEnumResponse(enumResp)
                 log("Parsed ${shares.size} shares: ${shares.joinToString { it.name }}")
                 return shares.filter { it.name != "IPC$" }
