@@ -174,20 +174,19 @@ object SmbShareLister {
         body.putShort(0.toShort())      // context ID
         body.putShort(1.toShort())      // num transfer syntaxes
         // SRVSVC UUID: 4b324fc8-1670-01d3-1278-5a47bf6ee188
-        body.putInt(0xC84F324B.toInt())
-        body.putShort(0x0116.toShort())
-        body.putShort(0x1278.toShort())
-        body.put(0x5A.toByte()); body.put(0x47.toByte())
-        body.put(0xBF.toByte()); body.put(0x6E.toByte())
-        body.put(0xE1.toByte()); body.put(0x88.toByte())
+        // NDR: time_low(4B LE) + time_mid(2B LE) + time_hi(2B LE) + clock_seq(2B BE) + node(6B BE)
+        body.put(0xc8.toByte()); body.put(0x4f.toByte()); body.put(0x32.toByte()); body.put(0x4b.toByte())  // 4b324fc8 LE
+        body.put(0x70.toByte()); body.put(0x16.toByte())  // 1670 LE
+        body.put(0xd3.toByte()); body.put(0x01.toByte())  // 01d3 LE
+        body.put(0x12.toByte()); body.put(0x78.toByte())  // 1278 BE
+        body.put(0x5a.toByte()); body.put(0x47.toByte()); body.put(0xbf.toByte()); body.put(0x6e.toByte()); body.put(0xe1.toByte()); body.put(0x88.toByte())  // node BE
         body.putShort(3.toShort()); body.putShort(0.toShort())   // interface version 3.0
         // NDR transfer syntax: 8a885d04-1ceb-106c-921f-00c04fc2c6f3
-        body.putInt(0x045D888A.toInt())
-        body.putShort(0x1C1E.toShort())
-        body.putShort(0x9210.toShort())
-        body.put(0x00.toByte()); body.put(0xC0.toByte())
-        body.put(0x4F.toByte()); body.put(0xC2.toByte())
-        body.put(0xC6.toByte()); body.put(0xF3.toByte())
+        body.put(0x04.toByte()); body.put(0x5d.toByte()); body.put(0x88.toByte()); body.put(0x8a.toByte())  // 8a885d04 LE
+        body.put(0xeb.toByte()); body.put(0x1c.toByte())  // 1ceb LE
+        body.put(0x6c.toByte()); body.put(0x10.toByte())  // 106c LE
+        body.put(0x92.toByte()); body.put(0x1f.toByte())  // 921f BE
+        body.put(0x00.toByte()); body.put(0xc0.toByte()); body.put(0x4f.toByte()); body.put(0xc2.toByte()); body.put(0xc6.toByte()); body.put(0xf3.toByte())  // node BE
         body.putShort(2.toShort()); body.putShort(0.toShort())   // transfer syntax version 2.0
 
         val bodyBytes = body.array()
