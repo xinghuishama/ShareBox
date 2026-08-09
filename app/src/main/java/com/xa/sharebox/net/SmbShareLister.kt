@@ -77,13 +77,17 @@ object SmbShareLister {
                 // DCERPC Bind to SRVSVC interface
                 val bindReq = buildBindRequest()
                 log("Sending Bind request (${bindReq.size} bytes)")
-                val bindResp = pipe.transact(bindReq)
-                log("Bind response: ${bindResp?.size ?: 0} bytes")
+                pipe.write(bindReq)
+                val bindBuf = ByteArray(1024)
+                val bindRead = pipe.read(bindBuf)
+                log("Bind response: ${bindRead?.size ?: 0} bytes")
 
                 // NetShareEnumAll (opnum 15)
-                val enumReq = buildNetShareEnumAllRequest()
+                val enumReq = buildNetShareEnumAllRequest(host)
                 log("Sending NetShareEnumAll (${enumReq.size} bytes)")
-                val enumResp = pipe.transact(enumReq)
+                pipe.write(enumReq)
+                val enumBuf = ByteArray(8192)
+                val enumResp = pipe.read(enumBuf)
                 log("EnumAll response: ${enumResp?.size ?: 0} bytes")
 
                 val shares = parseShareEnumResponse(enumResp)
@@ -184,39 +188,77 @@ object SmbShareLister {
         return buildDcerpcHeader(0x0B, bodyBytes.size, 1) + bodyBytes
     }
 
-    private fun buildNetShareEnumAllRequest(): ByteArray {
-        // Request PDU body: alloc_hint(4) + context_id(2) + opnum(2) + params
-        val params = ByteBuffer.allocate(64).order(ByteOrder.LITTLE_ENDIAN)
-        // Server name pointer (referent)
-        params.putInt(0x00020000)
-        // Server name conformant array
-        params.putInt(1)   // max count
-        params.putInt(0)   // offset
-        params.putInt(1)   // actual count
-        // Server name "\\" (UTF-16LE) + null + pad
-        params.put('\\'.code.toByte()); params.put(0)
-        params.put('\\'.code.toByte()); params.put(0)
-        params.put(0); params.put(0)
-        // Level: 1
-        params.putInt(1)
-        // InfoStruct: NULL
-        params.putInt(0)
-        // PreferedMaximumLength
-        params.putInt(0xFFFFFFFF.toInt())
-        // ResumeHandle: NULL
-        params.putInt(0)
+    private fun buildNetShareEnumAllRequest(host: String): ByteArray {
+        // NetShareEnumAll (opnum 15) request body (after DCERPC header + request PDU header):
+        //
+        // Parameters (NDR encoded):
+        // 1. ServerName: [in, string] unique pointer -> conformant string
+        //    - referent_id (4 bytes, non-zero)
+        //    - conformant string: max_count, offset, actual_count, chars (UTF-16LE) + null + padding
+        // 2. InfoStruct: [in, out] reference pointer -> SHARE_ENUM struct
+        //    - referent_id (4 bytes, non-zero)
+        //    - Level: DWORD = 1
+        //    - SHARE_ENUM_UNION: case 1 -> LPSHARE_INFO_1 Buf1 pointer = NULL
+        // 3. PreferedMaximumLength: DWORD = 0xFFFFFFFF
+        // 4. ResumeHandle: [in, out, unique] pointer = NULL
 
-        val paramBytes = ByteArray(params.position())
-        System.arraycopy(params.array(), 0, paramBytes, 0, paramBytes.size)
+        // Server name: \\host\0 in UTF-16LE
+        val nameStr = "\\\\$host\u0000"
+        val nameBytes = nameStr.toByteArray(Charsets.UTF_16LE)
+        val nameChars = nameBytes.size / 2  // including null terminator
+        val namePad = (4 - (nameBytes.size % 4)) % 4
 
-        // Request PDU header: alloc_hint(4) + context_id(2) + opnum(2) = 8 bytes
-        val reqHeader = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
-        reqHeader.putInt(paramBytes.size)   // alloc hint
-        reqHeader.putShort(0.toShort())               // context id
-        reqHeader.putShort(15.toShort())              // opnum: NetShareEnumAll
+        // Build the body in a ByteArrayOutputStream
+        val body = java.io.ByteArrayOutputStream()
 
-        val bodyBytes = reqHeader.array() + paramBytes
+        // 1. ServerName unique pointer
+        writeIntLE(body, 0x00020000)  // referent_id (non-NULL)
+
+        // 1a. Conformant string
+        writeIntLE(body, nameChars)   // max_count (chars including null)
+        writeIntLE(body, 0)          // offset
+        writeIntLE(body, nameChars)  // actual_count (chars including null)
+        body.write(nameBytes)        // string data including null
+        for (i in 0 until namePad) body.write(0)  // padding to 4-byte boundary
+
+        // 2. InfoStruct reference pointer (non-NULL for [in, out])
+        writeIntLE(body, 0x00020004)  // referent_id
+
+        // 2a. SHARE_ENUM struct
+        writeIntLE(body, 1)  // Level = 1
+
+        // 2b. SHARE_ENUM_UNION: case 1 -> LPSHARE_INFO_1 Buf1
+        writeIntLE(body, 0)  // Buf1 pointer = NULL (server allocates)
+
+        // 3. PreferedMaximumLength
+        writeIntLE(body, -1)  // MAXDWORD = 0xFFFFFFFF
+
+        // 4. ResumeHandle unique pointer = NULL
+        writeIntLE(body, 0)
+
+        val paramBytes = body.toByteArray()
+
+        // DCERPC Request PDU: alloc_hint(4) + context_id(2) + opnum(2) + params
+        val reqBody = java.io.ByteArrayOutputStream()
+        writeIntLE(reqBody, paramBytes.size)  // alloc hint
+        writeShortLE(reqBody, 0)              // context id
+        writeShortLE(reqBody, 15)             // opnum: NetShareEnumAll
+        reqBody.write(paramBytes)
+
+        val bodyBytes = reqBody.toByteArray()
         return buildDcerpcHeader(0x00, bodyBytes.size, 2) + bodyBytes
+    }
+
+    private fun writeIntLE(out: java.io.ByteArrayOutputStream, v: Int) {
+        out.write(v and 0xFF)
+        out.write((v shr 8) and 0xFF)
+        out.write((v shr 16) and 0xFF)
+        out.write((v shr 24) and 0xFF)
+    }
+
+    private fun writeShortLE(out: java.io.ByteArrayOutputStream, v: Int) {
+        out.write(v and 0xFF)
+        out.write((v shr 8) and 0xFF)
     }
 
     private fun buildDcerpcHeader(ptype: Int, bodyLen: Int, callId: Int): ByteArray {
