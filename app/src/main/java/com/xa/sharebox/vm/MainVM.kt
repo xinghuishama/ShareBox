@@ -549,7 +549,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
     /** Start adding a server from a discovered device — pre-fills the dialog. */
     fun connectDiscovered(device: DiscoveredDevice) {
         if (device.type == ServerType.SMB) {
-            // For SMB, list shares first
+            // For SMB, list shares first — auto-try anonymous (like EZ file manager)
             _state.value = _state.value.copy(
                 showSmbShareDialog = true,
                 smbShareHost = device.ip,
@@ -557,8 +557,9 @@ class MainVM(app: Application) : AndroidViewModel(app) {
                 smbShareUser = "",
                 smbSharePass = "",
                 smbShareList = emptyList(),
-                smbShareLoading = false
+                smbShareLoading = true
             )
+            listSmbShares(device.ip, device.port, "", "")
         } else {
             _state.value = _state.value.copy(
                 showAddServerDialog = true,

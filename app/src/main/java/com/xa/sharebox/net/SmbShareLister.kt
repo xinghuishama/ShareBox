@@ -281,49 +281,80 @@ object SmbShareLister {
     private fun parseShareEnumResponse(data: ByteArray): List<ShareInfo> {
         val shares = mutableListOf<ShareInfo>()
         try {
-            if (data.size < 24) return shares
+            if (data.size < 24) {
+                log("parseShareEnumResponse: data too short (${data.size} bytes)")
+                return shares
+            }
             val buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
             buf.position(16)  // skip DCERPC header
             // Response PDU: alloc_hint(4) + context_id(2) + opnum(2)
             buf.int; buf.short; buf.short
 
             // NetShareEnumAll return: win32 error (4 bytes)
-            buf.int
+            val win32Error = buf.int
+            log("NetShareEnumAll win32_error=0x${String.format("%08x", win32Error)}")
+            if (win32Error != 0) {
+                log("NetShareEnumAll returned non-zero error, no shares")
+                return shares
+            }
 
             // Level (4 bytes)
             val level = buf.int
+            log("Level=$level")
 
-            // Pointer to ShareInfo (4 bytes referent)
+            // SHARE_ENUM_UNION unique pointer referent_id (4 bytes)
             buf.int
 
-            // Conformant array: max count (4), offset (4), actual count (4)
+            // TotalEntries (4 bytes)
+            val totalEntries = buf.int
+            log("TotalEntries=$totalEntries")
+
+            // ResumeHandle unique pointer referent_id (4 bytes, 0 = NULL)
+            buf.int
+
+            // Deferred SHARE_ENUM_UNION data:
+            // switch_tag (4 bytes, should = Level)
+            val switchTag = buf.int
+            log("switch_tag=$switchTag")
+
+            // Buf1 unique pointer referent_id (4 bytes)
+            buf.int
+
+            // Conformant array: max_count(4), offset(4), actual_count(4)
             val count = buf.int
             buf.int  // offset
             val actualCount = buf.int
+            log("Array: max_count=$count actual_count=$actualCount")
 
             val numShares = minOf(actualCount, count)
-            if (numShares <= 0 || numShares > 100) return shares
-
-            // Pointer to share entries (4 bytes)
-            buf.int
+            if (numShares <= 0 || numShares > 100) {
+                log("numShares=$numShares out of range, returning empty")
+                return shares
+            }
 
             // Read ShareInfo1 entries
-            // Each: netname ptr(4) + type(4) + remark ptr(4) + permissions(4) + max_uses(4)
-            val entries = mutableListOf<Triple<Int, Int, Int>>()
+            // Each SHARE_INFO_1 = 12 bytes: netname_ptr(4) + type(4) + remark_ptr(4)
+            val entries = mutableListOf<Pair<Int, Int>>()  // (netname_ptr, type)
             for (i in 0 until numShares) {
-                entries.add(Triple(buf.int, buf.int, buf.int))
-                buf.int  // permissions
-                buf.int  // max_uses
+                val netnamePtr = buf.int
+                val shareType = buf.int
+                val remarkPtr = buf.int
+                entries.add(Pair(netnamePtr, shareType))
+                log("Entry[$i]: netname_ptr=0x${String.format("%08x", netnamePtr)} type=0x${String.format("%08x", shareType)} remark_ptr=0x${String.format("%08x", remarkPtr)}")
             }
 
-            for ((_, shareType, _) in entries) {
+            // Read deferred string data (netname + remark for each entry, in order)
+            for ((index, _) in entries.withIndex()) {
                 val name = readNdrString(buf)
                 val comment = readNdrString(buf)
+                log("String[$index]: name='$name' comment='$comment'")
                 if (name.isNotEmpty()) {
-                    shares.add(ShareInfo(name, shareType, comment))
+                    shares.add(ShareInfo(name, entries[index].second, comment))
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            log("parseShareEnumResponse EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
+        }
         return shares
     }
 
