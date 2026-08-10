@@ -394,7 +394,7 @@ object SmbShareLister {
         body.putShort(4280.toShort())   // max receive fragment
         body.putInt(0)        // assoc group ID
         // Pctx: NDR transfer syntax
-        body.put(0x05.toByte()) // context elements count
+        body.put(0x01.toByte()) // context elements count (1, NOT 5!)
         body.put(0x00.toByte()) // reserved
         body.putShort(0)       // reserved
         body.putShort(0)       // context ID 0
