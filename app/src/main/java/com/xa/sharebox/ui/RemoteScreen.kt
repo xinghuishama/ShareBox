@@ -33,6 +33,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -358,6 +359,7 @@ fun SmbSharePickerDialog(
 ) {
     var user by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
+    var manualShare by remember { mutableStateOf("") }
     var hasLoaded by remember { mutableStateOf(false) }
 
     AlertDialog(
@@ -419,6 +421,32 @@ fun SmbSharePickerDialog(
                     Text("未发现共享，或需要认证",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                // Manual share name input — for devices where auto-discovery fails
+                Text("手动输入共享名",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = manualShare,
+                        onValueChange = { manualShare = it },
+                        label = { Text("共享名") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = { onPickShare(manualShare.trim()) },
+                        enabled = manualShare.isNotBlank()
+                    ) {
+                        Text("连接")
+                    }
                 }
             }
         },
