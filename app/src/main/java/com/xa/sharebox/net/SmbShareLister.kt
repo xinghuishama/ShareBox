@@ -67,7 +67,14 @@ object SmbShareLister {
             return result.filter { it.name != "IPC$" }
         }
 
-        // Fallback: try common share names + server name
+        // Try RAP (old SMB1 protocol via \PIPE\LANMAN)
+        val rapResult = tryRap(host, port, username, password)
+        if (rapResult != null) {
+            log("RAP succeeded: ${rapResult.size} shares")
+            return rapResult.filter { it.name != "IPC$" }
+        }
+
+        // Fallback: try common share names + NBNS
         return tryConnectCommonShares(host, port, username, password)
     }
 
@@ -189,6 +196,115 @@ object SmbShareLister {
             }
         } catch (e: Exception) {
             log("DCERPC FAILED: ${e.javaClass.simpleName}: ${e.message}")
+            return null
+        } finally {
+            try { client.close() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Try RAP (Remote Access Protocol) NetShareEnum via \PIPE\LANMAN.
+     * This is the old SMB1 RAP protocol, much simpler than DCERPC.
+     * Many cheap routers support RAP even when DCERPC Bind is rejected.
+     */
+    private fun tryRap(
+        host: String, port: Int, username: String, password: String
+    ): List<ShareInfo>? {
+        val config = SmbConfig.builder()
+            .withTimeout(15, TimeUnit.SECONDS)
+            .withSoTimeout(15, TimeUnit.SECONDS)
+            .build()
+        val client = SMBClient(config)
+        try {
+            log("[RAP] Connecting to $host:$port")
+            val connection = client.connect(host, port)
+            val auth = if (username.isBlank() && password.isBlank()) {
+                AuthenticationContext.anonymous()
+            } else {
+                AuthenticationContext(username, password.toCharArray(), null)
+            }
+            val session = connection.authenticate(auth)
+            log("[RAP] Authenticated OK")
+
+            val pipeShare = session.connectShare("IPC$") as PipeShare
+            log("[RAP] Connected to IPC$")
+
+            val pipe = pipeShare.open(
+                "LANMAN",
+                SMB2ImpersonationLevel.Impersonation,
+                EnumSet.of(AccessMask.GENERIC_READ, AccessMask.GENERIC_WRITE),
+                emptySet(),
+                EnumSet.of(SMB2ShareAccess.FILE_SHARE_READ, SMB2ShareAccess.FILE_SHARE_WRITE),
+                SMB2CreateDisposition.FILE_OPEN,
+                emptySet()
+            )
+            log("[RAP] Opened LANMAN pipe")
+
+            try {
+                // Build RAP NetShareEnum request
+                // Format: function_code(2) + param_desc + data_desc + detail_level(2) + buf_size(2)
+                val paramDesc = "WrLeh\u0000"  // 6 bytes
+                val dataDesc = "B13BWz\u0000"  // 7 bytes
+                val req = ByteBuffer.allocate(19).order(ByteOrder.LITTLE_ENDIAN)
+                req.putShort(0)  // function code: 0 = NetShareEnum
+                req.put(paramDesc.toByteArray(Charsets.US_ASCII))
+                req.put(dataDesc.toByteArray(Charsets.US_ASCII))
+                req.putShort(1)  // detail level: 1
+                req.putShort(65535)  // receive buffer size
+
+                val reqBytes = req.array()
+                log("[RAP] Sending RAP request (${reqBytes.size} bytes)")
+                logHex("[RAP] Request", reqBytes)
+
+                val resp = pipe.transact(reqBytes)
+                log("[RAP] Response: ${resp.size} bytes")
+                logHex("[RAP] Response", resp)
+
+                if (resp.size < 8) {
+                    log("[RAP] Response too short (${resp.size} bytes)")
+                    return null
+                }
+
+                // Parse RAP response header
+                val buf = ByteBuffer.wrap(resp).order(ByteOrder.LITTLE_ENDIAN)
+                val status = buf.short.toInt() and 0xFFFF
+                val convert = buf.short.toInt() and 0xFFFF
+                val count = buf.short.toInt() and 0xFFFF
+                val available = buf.short.toInt() and 0xFFFF
+                log("[RAP] status=$status convert=$convert count=$count available=$available")
+
+                if (status != 0) {
+                    log("[RAP] RAP failed with status=$status")
+                    return null
+                }
+
+                val shares = mutableListOf<ShareInfo>()
+                // RAP SHARE_INFO_1: 20 bytes per entry
+                // - netname: 13 bytes (ASCII, null-padded)
+                // - pad: 1 byte
+                // - type: 2 bytes (LE)
+                // - remark: 4 bytes (DWORD offset into data area)
+                for (i in 0 until count) {
+                    if (buf.remaining() < 20) break
+                    val nameBytes = ByteArray(13)
+                    buf.get(nameBytes)
+                    val name = String(nameBytes, Charsets.US_ASCII).trimEnd('\u0000').trim()
+                    buf.get()  // pad
+                    val shareType = buf.short.toInt() and 0xFFFF
+                    val remarkOffset = buf.int
+                    log("[RAP] Share[$i]: name='$name' type=$shareType remark_offset=$remarkOffset")
+                    if (name.isNotEmpty()) {
+                        shares.add(ShareInfo(name, shareType, ""))
+                    }
+                }
+
+                log("[RAP] Parsed ${shares.size} shares: ${shares.joinToString { it.name }}")
+                return shares
+            } finally {
+                try { pipe.close() } catch (_: Exception) {}
+            }
+        } catch (e: Exception) {
+            log("[RAP] FAILED: ${e.javaClass.simpleName}: ${e.message}")
             return null
         } finally {
             try { client.close() } catch (_: Exception) {}
