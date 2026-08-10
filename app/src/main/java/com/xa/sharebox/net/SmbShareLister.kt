@@ -15,6 +15,13 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Enumerates SMB shares via DCERPC NetShareEnumAll (opnum 15) through the srvsvc named pipe.
+ *
+ * Tries two transport methods:
+ *  1. pipe.transact() — FSCTL_PIPE_TRANSCEIVE (single IOCTL write+read)
+ *  2. pipe.write() + pipe.read() — separate SMB2 WRITE + READ
+ *
+ * Some servers (especially cheap routers) don't properly support FSCTL_PIPE_TRANSCEIVE
+ * but do support separate write/read.
  */
 object SmbShareLister {
 
@@ -34,6 +41,21 @@ object SmbShareLister {
         } catch (_: Exception) {}
     }
 
+    private fun logHex(label: String, data: ByteArray) {
+        try {
+            val hex = StringBuilder()
+            for (i in data.indices) {
+                if (i > 0) hex.append(' ')
+                hex.append(String.format("%02x", data[i]))
+                if (i >= 63) {
+                    hex.append(" ... (${data.size} bytes total)")
+                    break
+                }
+            }
+            log("$label (${data.size} bytes): $hex")
+        } catch (_: Exception) {}
+    }
+
     fun listShares(
         host: String,
         port: Int = 445,
@@ -41,6 +63,34 @@ object SmbShareLister {
         password: String
     ): List<ShareInfo> {
         log("======== listShares host=$host port=$port user='$username' ========")
+
+        // Try approach 1: DCERPC via transact (FSCTL_PIPE_TRANSCEIVE)
+        val result1 = tryDcerpc(host, port, username, password, useTransact = true)
+        if (result1 != null) {
+            log("DCERPC via transact succeeded: ${result1.size} shares")
+            return result1.filter { it.name != "IPC$" }
+        }
+
+        // Try approach 2: DCERPC via write+read (separate SMB2 WRITE + READ)
+        val result2 = tryDcerpc(host, port, username, password, useTransact = false)
+        if (result2 != null) {
+            log("DCERPC via write+read succeeded: ${result2.size} shares")
+            return result2.filter { it.name != "IPC$" }
+        }
+
+        // Fallback: try common share names + server name
+        return tryConnectCommonShares(host, port, username, password)
+    }
+
+    /**
+     * Try DCERPC Bind + NetShareEnumAll using the specified transport method.
+     * Returns null on failure, or the list of shares on success.
+     */
+    private fun tryDcerpc(
+        host: String, port: Int, username: String, password: String,
+        useTransact: Boolean
+    ): List<ShareInfo>? {
+        val method = if (useTransact) "transact" else "write+read"
         val config = SmbConfig.builder()
             .withTimeout(15, TimeUnit.SECONDS)
             .withSoTimeout(15, TimeUnit.SECONDS)
@@ -48,19 +98,19 @@ object SmbShareLister {
 
         val client = SMBClient(config)
         try {
-            log("Connecting to $host:$port")
+            log("[$method] Connecting to $host:$port")
             val connection = client.connect(host, port)
-            log("Connected, authenticating...")
+            log("[$method] Connected, authenticating...")
             val auth = if (username.isBlank() && password.isBlank()) {
                 AuthenticationContext.anonymous()
             } else {
                 AuthenticationContext(username, password.toCharArray(), null)
             }
             val session = connection.authenticate(auth)
-            log("Authenticated OK")
+            log("[$method] Authenticated OK")
 
             val pipeShare = session.connectShare("IPC$") as PipeShare
-            log("Connected to IPC$")
+            log("[$method] Connected to IPC$")
 
             val pipe = pipeShare.open(
                 "srvsvc",
@@ -71,49 +121,170 @@ object SmbShareLister {
                 SMB2CreateDisposition.FILE_OPEN,
                 emptySet()
             )
-            log("Opened srvsvc pipe")
+            log("[$method] Opened srvsvc pipe")
 
             try {
-                // DCERPC Bind to SRVSVC interface
+                // === DCERPC Bind ===
                 val bindReq = buildBindRequest()
-                log("Sending Bind request (${bindReq.size} bytes)")
-                val bindResp = pipe.transact(bindReq)
-                log("Bind response: ${bindResp?.size ?: 0} bytes")
-                if (bindResp == null || bindResp.size < 16) {
-                    log("Bind response too short, aborting")
-                    return emptyList()
-                }
-                // Log Bind result byte (offset 31 in v1, or check type field at offset 2)
-                log("Bind type=0x${String.format("%02x", bindResp[2])} flags=0x${String.format("%02x", bindResp[3])}")
+                logHex("[$method] Bind request", bindReq)
+                log("[$method] Sending Bind (${bindReq.size} bytes)")
 
-                // NetShareEnumAll (opnum 15)
-                val enumReq = buildNetShareEnumAllRequest(host)
-                log("Sending NetShareEnumAll (${enumReq.size} bytes)")
-                val enumResp = pipe.transact(enumReq)
-                log("EnumAll response: ${enumResp?.size ?: 0} bytes")
-                if (enumResp == null || enumResp.size < 16) {
-                    log("EnumAll response too short, aborting")
-                    return emptyList()
+                val bindResp = if (useTransact) {
+                    pipe.transact(bindReq)
+                } else {
+                    pipeWriteRead(pipe, bindReq)
                 }
+
+                if (bindResp == null) {
+                    log("[$method] Bind response: null")
+                    return null
+                }
+                log("[$method] Bind response: ${bindResp.size} bytes")
+                logHex("[$method] Bind response", bindResp)
+
+                if (bindResp.size < 16) {
+                    log("[$method] Bind response too short, aborting")
+                    return null
+                }
+
+                val bindType = bindResp[2].toInt() and 0xFF
+                val bindFlags = bindResp[3].toInt() and 0xFF
+                log("[$method] Bind type=0x${String.format("%02x", bindType)} flags=0x${String.format("%02x", bindFlags)}")
+
+                when (bindType) {
+                    0x0C -> {
+                        // BindAck — check if interface was accepted
+                        log("[$method] BindAck received!")
+                        // Check results list (at end of BindAck)
+                        // Parse: max_xmit(2) + max_recv(2) + assoc_group(4) + sec_addr_len(2) + sec_addr + pad + num_results(4) + results[24]
+                        // For simplicity, just check the last 4 bytes for the result
+                        if (bindResp.size >= 68) {
+                            val lastResult = bindResp[bindResp.size - 4].toInt() and 0xFF
+                            log("[$method] Bind result byte: $lastResult (0=accept, 2=provider_rejection, 3=not_supported)")
+                            if (lastResult != 0) {
+                                log("[$method] Interface not accepted by server")
+                                return null
+                            }
+                        }
+                    }
+                    0x0D -> {
+                        // BindNak
+                        val rejectReason = if (bindResp.size >= 18) {
+                            (bindResp[16].toInt() and 0xFF) or ((bindResp[17].toInt() and 0xFF) shl 8)
+                        } else -1
+                        log("[$method] BindNak! reject_reason=$rejectReason")
+                        // 0=reason_not_specified, 1=temporary_congestion, 2=local_limit_exceeded,
+                        // 3=called_psmid_unknown, 4=protocol_version_not_supported
+                        return null
+                    }
+                    0x03 -> {
+                        // Fault
+                        val status = if (bindResp.size >= 28) {
+                            ByteBuffer.wrap(bindResp, 24, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                        } else 0
+                        log("[$method] Fault! status=0x${String.format("%08x", status)}")
+                        return null
+                    }
+                    else -> {
+                        log("[$method] Unknown bind response type: 0x${String.format("%02x", bindType)}")
+                        return null
+                    }
+                }
+
+                // === NetShareEnumAll ===
+                val enumReq = buildNetShareEnumAllRequest(host)
+                log("[$method] Sending NetShareEnumAll (${enumReq.size} bytes)")
+
+                val enumResp = if (useTransact) {
+                    pipe.transact(enumReq)
+                } else {
+                    pipeWriteRead(pipe, enumReq)
+                }
+
+                if (enumResp == null || enumResp.size < 16) {
+                    log("[$method] EnumAll response too short (${enumResp?.size ?: 0} bytes)")
+                    return null
+                }
+                log("[$method] EnumAll response: ${enumResp.size} bytes")
+                logHex("[$method] EnumAll response", enumResp)
 
                 val shares = parseShareEnumResponse(enumResp)
-                log("Parsed ${shares.size} shares: ${shares.joinToString { it.name }}")
-                return shares.filter { it.name != "IPC$" }
+                log("[$method] Parsed ${shares.size} shares: ${shares.joinToString { it.name }}")
+                return shares
+
             } finally {
-                pipe.close()
+                try { pipe.close() } catch (_: Exception) {}
             }
         } catch (e: Exception) {
-            log("DCERPC FAILED: ${e.javaClass.simpleName}: ${e.message}")
-            // Fallback: try connecting to common share names
-            return tryConnectCommonShares(host, port, username, password)
+            log("[$method] DCERPC FAILED: ${e.javaClass.simpleName}: ${e.message}")
+            return null
         } finally {
             try { client.close() } catch (_: Exception) {}
         }
     }
 
     /**
+     * Alternative to pipe.transact(): write data via SMB2 WRITE, then read response via SMB2 READ.
+     * Some servers don't properly support FSCTL_PIPE_TRANSCEIVE but do support separate write/read.
+     *
+     * Reads the DCERPC header first (16 bytes) to determine frag_length, then reads the full PDU.
+     */
+    private fun pipeWriteRead(pipe: PipeShare.PipeHandle, data: ByteArray): ByteArray? {
+        try {
+            pipe.write(data, 0, data.size)
+            log("[write+read] Wrote ${data.size} bytes, reading response...")
+
+            // Read DCERPC header (16 bytes)
+            val header = ByteArray(16)
+            var totalRead = 0
+            while (totalRead < 16) {
+                val n = pipe.read(header, totalRead, 16 - totalRead)
+                if (n <= 0) {
+                    if (totalRead == 0) {
+                        log("[write+read] No response data")
+                        return null
+                    }
+                    break
+                }
+                totalRead += n
+            }
+
+            if (totalRead < 16) {
+                log("[write+read] Only got $totalRead bytes of header")
+                return header.copyOfRange(0, totalRead)
+            }
+
+            // Parse frag_length (bytes 8-9, little-endian)
+            val fragLen = (header[8].toInt() and 0xFF) or ((header[9].toInt() and 0xFF) shl 8)
+            log("[write+read] frag_length=$fragLen")
+
+            if (fragLen <= 16) {
+                return header
+            }
+
+            // Read the rest of the PDU
+            val full = ByteArray(fragLen)
+            System.arraycopy(header, 0, full, 0, 16)
+            var remaining = fragLen - 16
+            var offset = 16
+            while (remaining > 0) {
+                val n = pipe.read(full, offset, remaining)
+                if (n <= 0) break
+                offset += n
+                remaining -= n
+            }
+            log("[write+read] Total read: ${fragLen - remaining} / $fragLen bytes")
+            return full
+
+        } catch (e: Exception) {
+            log("[write+read] EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
+            return null
+        }
+    }
+
+    /**
      * Fallback: try to tree-connect to common share names.
-     * Not as good as NetShareEnumAll, but works when DCERPC is unavailable.
+     * Also tries the server name from SMB2 negotiation as a share name.
      */
     private fun tryConnectCommonShares(
         host: String, port: Int, username: String, password: String
@@ -134,16 +305,43 @@ object SmbShareLister {
             }
             val session = connection.authenticate(auth)
 
-            // Try common share names (skip IPC$ — it's a pipe, not a disk share)
-            val candidates = listOf("C$", "D$", "E$", "F$", "Public", "Share", "Shares",
+            // Try to get server name from SMB2 negotiation
+            var serverName: String? = null
+            try {
+                val m = connection.javaClass.getMethod("getRemoteServerName")
+                serverName = m.invoke(connection) as? String
+                log("Server name from negotiation: '$serverName'")
+            } catch (e: Exception) {
+                try {
+                    val m = connection.javaClass.getMethod("getServerName")
+                    serverName = m.invoke(connection) as? String
+                    log("Server name: '$serverName'")
+                } catch (e2: Exception) {
+                    log("Could not get server name from connection")
+                }
+            }
+
+            // Build candidate list
+            val candidates = mutableListOf(
+                "C$", "D$", "E$", "F$", "Public", "Share", "Shares",
                 "Shared", "Data", "Files", "Documents", "Media", "Home", "Homes",
                 "ADMIN$", "print$",
                 // Router/NAS specific
-                "sda", "sda1", "sdb", "sdb1", "usb", "usb1", "sdcard",
+                "sda", "sda1", "sdb", "sdb1", "usb", "usb1", "usbshare1", "sdcard",
                 "nfs", "ftp", "download", "cloud",
                 // Common NAS names
                 "volume1", "volume2", "DataVolume", "Storage",
-                "photo", "video", "music", "backup")
+                "photo", "video", "music", "backup"
+            )
+
+            // Add server name as share name candidate (high priority)
+            if (!serverName.isNullOrBlank()) {
+                candidates.add(0, serverName!!)
+                val noSpace = serverName!!.replace(" ", "")
+                if (noSpace != serverName) {
+                    candidates.add(1, noSpace)
+                }
+            }
 
             for (name in candidates) {
                 try {
