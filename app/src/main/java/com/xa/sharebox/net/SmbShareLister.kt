@@ -246,11 +246,11 @@ object SmbShareLister {
                 val paramDesc = "WrLeh\u0000"  // 6 bytes
                 val dataDesc = "B13BWz\u0000"  // 7 bytes
                 val req = ByteBuffer.allocate(19).order(ByteOrder.LITTLE_ENDIAN)
-                req.putShort(0)  // function code: 0 = NetShareEnum
+                req.putShort(0.toShort())  // function code: 0 = NetShareEnum
                 req.put(paramDesc.toByteArray(Charsets.US_ASCII))
                 req.put(dataDesc.toByteArray(Charsets.US_ASCII))
-                req.putShort(1)  // detail level: 1
-                req.putShort(65535)  // receive buffer size
+                req.putShort(1.toShort())  // detail level: 1
+                req.putShort(65535.toShort())  // receive buffer size
 
                 val reqBytes = req.array()
                 log("[RAP] Sending RAP request (${reqBytes.size} bytes)")
