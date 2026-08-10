@@ -197,7 +197,7 @@ object SmbShareLister {
 
     /**
      * Fallback: try to tree-connect to common share names.
-     * Also tries the server name from SMB2 negotiation as a share name.
+     * Also tries the server name discovered via NetBIOS Name Service (NBNS, UDP 137).
      */
     private fun tryConnectCommonShares(
         host: String, port: Int, username: String, password: String
@@ -218,21 +218,9 @@ object SmbShareLister {
             }
             val session = connection.authenticate(auth)
 
-            // Try to get server name from SMB2 negotiation
-            var serverName: String? = null
-            try {
-                val m = connection.javaClass.getMethod("getRemoteServerName")
-                serverName = m.invoke(connection) as? String
-                log("Server name from negotiation: '$serverName'")
-            } catch (e: Exception) {
-                try {
-                    val m = connection.javaClass.getMethod("getServerName")
-                    serverName = m.invoke(connection) as? String
-                    log("Server name: '$serverName'")
-                } catch (e2: Exception) {
-                    log("Could not get server name from connection")
-                }
-            }
+            // Try to get server name via NBNS (NetBIOS Name Service, UDP 137)
+            val nbnsNames = queryNetbiosNames(host)
+            log("NBNS discovered names: $nbnsNames")
 
             // Build candidate list
             val candidates = mutableListOf(
@@ -247,14 +235,19 @@ object SmbShareLister {
                 "photo", "video", "music", "backup"
             )
 
-            // Add server name as share name candidate (high priority)
-            if (!serverName.isNullOrBlank()) {
-                candidates.add(0, serverName!!)
-                val noSpace = serverName!!.replace(" ", "")
-                if (noSpace != serverName) {
-                    candidates.add(1, noSpace)
+            // Add NBNS-discovered names as high-priority share name candidates
+            for (name in nbnsNames) {
+                if (name.isNotBlank() && name != "WORKGROUP" && name != "MSBROWSE") {
+                    candidates.add(0, name)
+                    // Also try without spaces
+                    val noSpace = name.replace(" ", "")
+                    if (noSpace != name) {
+                        candidates.add(1, noSpace)
+                    }
                 }
             }
+
+            log("Trying ${candidates.size} share name candidates: $candidates")
 
             for (name in candidates) {
                 try {
@@ -274,6 +267,125 @@ object SmbShareLister {
             try { client.close() } catch (_: Exception) {}
         }
         return shares
+    }
+
+    /**
+     * Query NetBIOS Name Service (NBNS, UDP port 137) to discover server names.
+     * Returns a list of unique NetBIOS names registered by the host.
+     */
+    private fun queryNetbiosNames(host: String): List<String> {
+        val names = mutableListOf<String>()
+        val socket = java.net.DatagramSocket()
+        try {
+            socket.soTimeout = 2000
+
+            // Build NBNS Node Status Request (wildcard "*")
+            // Query name: "*" padded to 15 chars + null suffix = 16 chars
+            // NetBIOS encoding: each nibble + 'A' → 2 chars per byte
+            val nameBytes = ByteArray(32)
+            val rawName = ByteArray(16)
+            rawName[0] = '*'.code.toByte()  // wildcard
+            for (i in 1..14) rawName[i] = ' '.code.toByte()  // pad with spaces
+            rawName[15] = 0  // suffix = 0
+            for (i in 0..15) {
+                val hi = (rawName[i].toInt() ushr 4) and 0x0F
+                val lo = rawName[i].toInt() and 0x0F
+                nameBytes[i * 2] = (hi + 'A'.code).toByte()
+                nameBytes[i * 2 + 1] = (lo + 'A'.code).toByte()
+            }
+
+            // Build packet: header(12) + name_length(1) + name(32) + null(1) + type(2) + class(2)
+            val packet = ByteArray(12 + 1 + 32 + 1 + 2 + 2)
+            packet[0] = 0x00; packet[1] = 0x01  // Transaction ID = 1
+            packet[2] = 0x00; packet[3] = 0x00  // Flags: standard query
+            packet[4] = 0x00; packet[5] = 0x01  // Questions = 1
+            packet[6] = 0x00; packet[7] = 0x00  // Answer RRs
+            packet[8] = 0x00; packet[9] = 0x00  // Authority RRs
+            packet[10] = 0x00; packet[11] = 0x00  // Additional RRs
+            packet[12] = 0x20  // Name length = 32
+            System.arraycopy(nameBytes, 0, packet, 13, 32)
+            packet[45] = 0x00  // Null terminator
+            packet[46] = 0x00; packet[47] = 0x21  // Type = NBSTAT (33)
+            packet[48] = 0x00; packet[49] = 0x01  // Class = IN
+
+            socket.send(java.net.DatagramPacket(packet, packet.size, java.net.InetAddress.getByName(host), 137))
+
+            val response = ByteArray(1024)
+            val recv = java.net.DatagramPacket(response, response.size)
+            socket.receive(recv)
+            val len = recv.length
+
+            // Parse response header (12 bytes)
+            if (len < 12) return names
+
+            // Skip header + question section to find answer section
+            // After header(12), question is: name_len(1) + name(32) + null(1) + type(2) + class(2) = 38
+            var pos = 12
+            // Skip question name
+            if (pos < len && response[pos].toInt() == 0x20) {
+                pos += 1 + 32 + 1 + 2 + 2  // name_len + name + null + type + class
+            } else {
+                // Use a more robust skip: skip until we find the answer
+                pos = 12
+                while (pos < len) {
+                    val b = response[pos].toInt() and 0xFF
+                    if (b == 0) { pos++; break }
+                    if (b and 0xC0 == 0xC0) { pos += 2; break }
+                    pos += 1 + b
+                }
+                // Skip type and class
+                pos += 4
+            }
+
+            // Answer section: name (compressed or full) + type(2) + class(2) + ttl(4) + rdlength(2) + rdata
+            // Skip answer name (usually compressed: 2 bytes 0xC0 xx)
+            if (pos < len && (response[pos].toInt() and 0xC0) == 0xC0) {
+                pos += 2
+            } else {
+                // Full name
+                while (pos < len) {
+                    val b = response[pos].toInt() and 0xFF
+                    if (b == 0) { pos++; break }
+                    if (b and 0xC0 == 0xC0) { pos += 2; break }
+                    pos += 1 + b
+                }
+            }
+
+            // type(2) + class(2) + ttl(4) + rdlength(2)
+            pos += 2 + 2 + 4
+            if (pos + 2 > len) return names
+            val rdLength = ((response[pos].toInt() and 0xFF) shl 8) or (response[pos + 1].toInt() and 0xFF)
+            pos += 2
+
+            if (pos + rdLength > len) return names
+
+            // RDATA: num_names(1) + entries (18 bytes each)
+            val numNames = response[pos].toInt() and 0xFF
+            pos += 1
+            log("NBNS: $numNames names in response")
+
+            for (i in 0 until numNames) {
+                if (pos + 18 > len) break
+                // Name: 15 chars + 1 suffix byte
+                val nameBytes2 = response.copyOfRange(pos, pos + 15)
+                val name = String(nameBytes2, Charsets.US_ASCII).trim()
+                val suffix = response[pos + 15].toInt() and 0xFF
+                val flags = ((response[pos + 16].toInt() and 0xFF) shl 8) or (response[pos + 17].toInt() and 0xFF)
+                pos += 18
+                log("NBNS name[$i]: '$name' suffix=0x${String.format("%02x", suffix)} flags=0x${String.format("%04x", flags)}")
+                // Type 0x00 = workstation name, 0x20 = file server service
+                if (suffix == 0x00 || suffix == 0x20) {
+                    if (name.isNotBlank() && !names.contains(name)) {
+                        names.add(name)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            log("NBNS query failed: ${e.javaClass.simpleName}: ${e.message}")
+        } finally {
+            socket.close()
+        }
+        return names
     }
 
     private fun buildBindRequest(): ByteArray {
