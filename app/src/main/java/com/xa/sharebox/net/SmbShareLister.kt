@@ -16,12 +16,8 @@ import java.util.concurrent.TimeUnit
 /**
  * Enumerates SMB shares via DCERPC NetShareEnumAll (opnum 15) through the srvsvc named pipe.
  *
- * Tries two transport methods:
- *  1. pipe.transact() — FSCTL_PIPE_TRANSCEIVE (single IOCTL write+read)
- *  2. pipe.write() + pipe.read() — separate SMB2 WRITE + READ
- *
- * Some servers (especially cheap routers) don't properly support FSCTL_PIPE_TRANSCEIVE
- * but do support separate write/read.
+ * If DCERPC Bind fails (BindNak/Fault — common on cheap routers that don't support DCERPC),
+ * falls back to trying common share names + the server name from SMB2 negotiation.
  */
 object SmbShareLister {
 
@@ -64,18 +60,11 @@ object SmbShareLister {
     ): List<ShareInfo> {
         log("======== listShares host=$host port=$port user='$username' ========")
 
-        // Try approach 1: DCERPC via transact (FSCTL_PIPE_TRANSCEIVE)
-        val result1 = tryDcerpc(host, port, username, password, useTransact = true)
-        if (result1 != null) {
-            log("DCERPC via transact succeeded: ${result1.size} shares")
-            return result1.filter { it.name != "IPC$" }
-        }
-
-        // Try approach 2: DCERPC via write+read (separate SMB2 WRITE + READ)
-        val result2 = tryDcerpc(host, port, username, password, useTransact = false)
-        if (result2 != null) {
-            log("DCERPC via write+read succeeded: ${result2.size} shares")
-            return result2.filter { it.name != "IPC$" }
+        // Try DCERPC via transact (FSCTL_PIPE_TRANSCEIVE)
+        val result = tryDcerpc(host, port, username, password)
+        if (result != null) {
+            log("DCERPC succeeded: ${result.size} shares")
+            return result.filter { it.name != "IPC$" }
         }
 
         // Fallback: try common share names + server name
@@ -83,14 +72,12 @@ object SmbShareLister {
     }
 
     /**
-     * Try DCERPC Bind + NetShareEnumAll using the specified transport method.
-     * Returns null on failure, or the list of shares on success.
+     * Try DCERPC Bind + NetShareEnumAll via pipe.transact().
+     * Returns null on failure (BindNak, Fault, or exception).
      */
     private fun tryDcerpc(
-        host: String, port: Int, username: String, password: String,
-        useTransact: Boolean
+        host: String, port: Int, username: String, password: String
     ): List<ShareInfo>? {
-        val method = if (useTransact) "transact" else "write+read"
         val config = SmbConfig.builder()
             .withTimeout(15, TimeUnit.SECONDS)
             .withSoTimeout(15, TimeUnit.SECONDS)
@@ -98,19 +85,19 @@ object SmbShareLister {
 
         val client = SMBClient(config)
         try {
-            log("[$method] Connecting to $host:$port")
+            log("Connecting to $host:$port")
             val connection = client.connect(host, port)
-            log("[$method] Connected, authenticating...")
+            log("Connected, authenticating...")
             val auth = if (username.isBlank() && password.isBlank()) {
                 AuthenticationContext.anonymous()
             } else {
                 AuthenticationContext(username, password.toCharArray(), null)
             }
             val session = connection.authenticate(auth)
-            log("[$method] Authenticated OK")
+            log("Authenticated OK")
 
             val pipeShare = session.connectShare("IPC$") as PipeShare
-            log("[$method] Connected to IPC$")
+            log("Connected to IPC$")
 
             val pipe = pipeShare.open(
                 "srvsvc",
@@ -121,48 +108,37 @@ object SmbShareLister {
                 SMB2CreateDisposition.FILE_OPEN,
                 emptySet()
             )
-            log("[$method] Opened srvsvc pipe")
+            log("Opened srvsvc pipe")
 
             try {
                 // === DCERPC Bind ===
                 val bindReq = buildBindRequest()
-                logHex("[$method] Bind request", bindReq)
-                log("[$method] Sending Bind (${bindReq.size} bytes)")
+                logHex("Bind request", bindReq)
+                log("Sending Bind (${bindReq.size} bytes)")
 
-                val bindResp = if (useTransact) {
-                    pipe.transact(bindReq)
-                } else {
-                    pipeWriteRead(pipe, bindReq)
-                }
-
-                if (bindResp == null) {
-                    log("[$method] Bind response: null")
-                    return null
-                }
-                log("[$method] Bind response: ${bindResp.size} bytes")
-                logHex("[$method] Bind response", bindResp)
+                val bindResp = pipe.transact(bindReq)
 
                 if (bindResp.size < 16) {
-                    log("[$method] Bind response too short, aborting")
+                    log("Bind response too short (${bindResp.size} bytes), aborting")
                     return null
                 }
+                log("Bind response: ${bindResp.size} bytes")
+                logHex("Bind response", bindResp)
 
                 val bindType = bindResp[2].toInt() and 0xFF
                 val bindFlags = bindResp[3].toInt() and 0xFF
-                log("[$method] Bind type=0x${String.format("%02x", bindType)} flags=0x${String.format("%02x", bindFlags)}")
+                log("Bind type=0x${String.format("%02x", bindType)} flags=0x${String.format("%02x", bindFlags)}")
 
                 when (bindType) {
                     0x0C -> {
                         // BindAck — check if interface was accepted
-                        log("[$method] BindAck received!")
+                        log("BindAck received!")
                         // Check results list (at end of BindAck)
-                        // Parse: max_xmit(2) + max_recv(2) + assoc_group(4) + sec_addr_len(2) + sec_addr + pad + num_results(4) + results[24]
-                        // For simplicity, just check the last 4 bytes for the result
                         if (bindResp.size >= 68) {
                             val lastResult = bindResp[bindResp.size - 4].toInt() and 0xFF
-                            log("[$method] Bind result byte: $lastResult (0=accept, 2=provider_rejection, 3=not_supported)")
+                            log("Bind result byte: $lastResult (0=accept, 2=provider_rejection, 3=not_supported)")
                             if (lastResult != 0) {
-                                log("[$method] Interface not accepted by server")
+                                log("Interface not accepted by server")
                                 return null
                             }
                         }
@@ -172,7 +148,7 @@ object SmbShareLister {
                         val rejectReason = if (bindResp.size >= 18) {
                             (bindResp[16].toInt() and 0xFF) or ((bindResp[17].toInt() and 0xFF) shl 8)
                         } else -1
-                        log("[$method] BindNak! reject_reason=$rejectReason")
+                        log("BindNak! reject_reason=$rejectReason")
                         // 0=reason_not_specified, 1=temporary_congestion, 2=local_limit_exceeded,
                         // 3=called_psmid_unknown, 4=protocol_version_not_supported
                         return null
@@ -182,103 +158,40 @@ object SmbShareLister {
                         val status = if (bindResp.size >= 28) {
                             ByteBuffer.wrap(bindResp, 24, 4).order(ByteOrder.LITTLE_ENDIAN).int
                         } else 0
-                        log("[$method] Fault! status=0x${String.format("%08x", status)}")
+                        log("Fault! status=0x${String.format("%08x", status)}")
                         return null
                     }
                     else -> {
-                        log("[$method] Unknown bind response type: 0x${String.format("%02x", bindType)}")
+                        log("Unknown bind response type: 0x${String.format("%02x", bindType)}")
                         return null
                     }
                 }
 
                 // === NetShareEnumAll ===
                 val enumReq = buildNetShareEnumAllRequest(host)
-                log("[$method] Sending NetShareEnumAll (${enumReq.size} bytes)")
+                log("Sending NetShareEnumAll (${enumReq.size} bytes)")
 
-                val enumResp = if (useTransact) {
-                    pipe.transact(enumReq)
-                } else {
-                    pipeWriteRead(pipe, enumReq)
-                }
+                val enumResp = pipe.transact(enumReq)
 
-                if (enumResp == null || enumResp.size < 16) {
-                    log("[$method] EnumAll response too short (${enumResp?.size ?: 0} bytes)")
+                if (enumResp.size < 16) {
+                    log("EnumAll response too short (${enumResp.size} bytes)")
                     return null
                 }
-                log("[$method] EnumAll response: ${enumResp.size} bytes")
-                logHex("[$method] EnumAll response", enumResp)
+                log("EnumAll response: ${enumResp.size} bytes")
+                logHex("EnumAll response", enumResp)
 
                 val shares = parseShareEnumResponse(enumResp)
-                log("[$method] Parsed ${shares.size} shares: ${shares.joinToString { it.name }}")
+                log("Parsed ${shares.size} shares: ${shares.joinToString { it.name }}")
                 return shares
 
             } finally {
                 try { pipe.close() } catch (_: Exception) {}
             }
         } catch (e: Exception) {
-            log("[$method] DCERPC FAILED: ${e.javaClass.simpleName}: ${e.message}")
+            log("DCERPC FAILED: ${e.javaClass.simpleName}: ${e.message}")
             return null
         } finally {
             try { client.close() } catch (_: Exception) {}
-        }
-    }
-
-    /**
-     * Alternative to pipe.transact(): write data via SMB2 WRITE, then read response via SMB2 READ.
-     * Some servers don't properly support FSCTL_PIPE_TRANSCEIVE but do support separate write/read.
-     *
-     * Reads the DCERPC header first (16 bytes) to determine frag_length, then reads the full PDU.
-     */
-    private fun pipeWriteRead(pipe: PipeShare.PipeHandle, data: ByteArray): ByteArray? {
-        try {
-            pipe.write(data, 0, data.size)
-            log("[write+read] Wrote ${data.size} bytes, reading response...")
-
-            // Read DCERPC header (16 bytes)
-            val header = ByteArray(16)
-            var totalRead = 0
-            while (totalRead < 16) {
-                val n = pipe.read(header, totalRead, 16 - totalRead)
-                if (n <= 0) {
-                    if (totalRead == 0) {
-                        log("[write+read] No response data")
-                        return null
-                    }
-                    break
-                }
-                totalRead += n
-            }
-
-            if (totalRead < 16) {
-                log("[write+read] Only got $totalRead bytes of header")
-                return header.copyOfRange(0, totalRead)
-            }
-
-            // Parse frag_length (bytes 8-9, little-endian)
-            val fragLen = (header[8].toInt() and 0xFF) or ((header[9].toInt() and 0xFF) shl 8)
-            log("[write+read] frag_length=$fragLen")
-
-            if (fragLen <= 16) {
-                return header
-            }
-
-            // Read the rest of the PDU
-            val full = ByteArray(fragLen)
-            System.arraycopy(header, 0, full, 0, 16)
-            var remaining = fragLen - 16
-            var offset = 16
-            while (remaining > 0) {
-                val n = pipe.read(full, offset, remaining)
-                if (n <= 0) break
-                offset += n
-                remaining -= n
-            }
-            log("[write+read] Total read: ${fragLen - remaining} / $fragLen bytes")
-            return full
-
-        } catch (e: Exception) {
-            log("[write+read] EXCEPTION: ${e.javaClass.simpleName}: ${e.message}")
-            return null
         }
     }
 
@@ -368,111 +281,93 @@ object SmbShareLister {
         body.putShort(4280.toShort())   // max transmit fragment
         body.putShort(4280.toShort())   // max receive fragment
         body.putInt(0)        // assoc group ID
-        body.putInt(1)        // num context elements
-        body.putShort(0.toShort())      // context ID
-        body.putShort(1.toShort())      // num transfer syntaxes
-        // SRVSVC UUID: 4b324fc8-1670-01d3-1278-5a47bf6ee188
-        // NDR: time_low(4B LE) + time_mid(2B LE) + time_hi(2B LE) + clock_seq(2B BE) + node(6B BE)
-        body.put(0xc8.toByte()); body.put(0x4f.toByte()); body.put(0x32.toByte()); body.put(0x4b.toByte())  // 4b324fc8 LE
-        body.put(0x70.toByte()); body.put(0x16.toByte())  // 1670 LE
-        body.put(0xd3.toByte()); body.put(0x01.toByte())  // 01d3 LE
-        body.put(0x12.toByte()); body.put(0x78.toByte())  // 1278 BE
-        body.put(0x5a.toByte()); body.put(0x47.toByte()); body.put(0xbf.toByte()); body.put(0x6e.toByte()); body.put(0xe1.toByte()); body.put(0x88.toByte())  // node BE
-        body.putShort(3.toShort()); body.putShort(0.toShort())   // interface version 3.0
-        // NDR transfer syntax: 8a885d04-1ceb-106c-921f-00c04fc2c6f3
-        body.put(0x04.toByte()); body.put(0x5d.toByte()); body.put(0x88.toByte()); body.put(0x8a.toByte())  // 8a885d04 LE
-        body.put(0xeb.toByte()); body.put(0x1c.toByte())  // 1ceb LE
-        body.put(0x6c.toByte()); body.put(0x10.toByte())  // 106c LE
-        body.put(0x92.toByte()); body.put(0x1f.toByte())  // 921f BE
-        body.put(0x00.toByte()); body.put(0xc0.toByte()); body.put(0x4f.toByte()); body.put(0xc2.toByte()); body.put(0xc6.toByte()); body.put(0xf3.toByte())  // node BE
-        body.putShort(2.toShort()); body.putShort(0.toShort())   // transfer syntax version 2.0
+        // Pctx: NDR transfer syntax
+        body.put(0x05.toByte()) // context elements count
+        body.put(0x00.toByte()) // reserved
+        body.putShort(0)       // reserved
+        body.putShort(0)       // context ID 0
+        body.putShort(1)       // num transfer syntaxes
+        // Interface: SRVSVC UUID
+        body.put(0xc8.toByte()); body.put(0x4f.toByte()); body.put(0x32.toByte()); body.put(0x4b.toByte())
+        body.put(0x70.toByte()); body.put(0x16.toByte())
+        body.put(0xd3.toByte()); body.put(0x01.toByte())
+        body.put(0x12.toByte()); body.put(0x78.toByte())
+        body.put(0x5a.toByte()); body.put(0x47.toByte()); body.put(0xbf.toByte()); body.put(0x6e.toByte()); body.put(0xe1.toByte()); body.put(0x88.toByte())
+        body.putInt(3)       // interface version
+        // NDR transfer syntax UUID
+        body.put(0x04.toByte()); body.put(0x5d.toByte()); body.put(0x88.toByte()); body.put(0x8a.toByte())
+        body.put(0xeb.toByte()); body.put(0x1c.toByte())
+        body.put(0x6c.toByte()); body.put(0x10.toByte())
+        body.put(0x92.toByte()); body.put(0x1f.toByte())
+        body.put(0x00.toByte()); body.put(0xc0.toByte()); body.put(0x4f.toByte()); body.put(0xc2.toByte()); body.put(0xc6.toByte()); body.put(0xf3.toByte())
+        body.putInt(2)       // NDR version
 
-        val bodyBytes = body.array()
-        return buildDcerpcHeader(0x0B, bodyBytes.size, 1) + bodyBytes
+        val header = buildDcerpcHeader(body.array().size, 0x0B) // 0x0B = Bind
+        val result = ByteArray(header.size + body.array().size)
+        System.arraycopy(header, 0, result, 0, header.size)
+        System.arraycopy(body.array(), 0, result, header.size, body.array().size)
+        return result
     }
 
     private fun buildNetShareEnumAllRequest(host: String): ByteArray {
-        // NetShareEnumAll (opnum 15) request body (after DCERPC header + request PDU header):
-        //
-        // Parameters (NDR encoded):
-        // 1. ServerName: [in, string] unique pointer -> conformant string
-        //    - referent_id (4 bytes, non-zero)
-        //    - conformant string: max_count, offset, actual_count, chars (UTF-16LE) + null + padding
-        // 2. InfoStruct: [in, out] reference pointer -> SHARE_ENUM struct
-        //    - referent_id (4 bytes, non-zero)
-        //    - Level: DWORD = 1
-        //    - SHARE_ENUM_UNION: case 1 -> LPSHARE_INFO_1 Buf1 pointer = NULL
-        // 3. PreferedMaximumLength: DWORD = 0xFFFFFFFF
-        // 4. ResumeHandle: [in, out, unique] pointer = NULL
+        // NetShareEnumAll (opnum 15) request
+        val serverName = "\\\\${host}"
+        val serverChars = serverName.length
+        // NDR: pointer(4) + max_count(4) + offset(4) + actual_count(4) + string(actual_count*2)
+        val serverNameBytes = (4 + 4 + 4 + 4 + serverChars * 2 + padding(serverChars * 2))
 
-        // Server name: \\host\0 in UTF-16LE
-        val nameStr = "\\\\$host\u0000"
-        val nameBytes = nameStr.toByteArray(Charsets.UTF_16LE)
-        val nameChars = nameBytes.size / 2  // including null terminator
-        val namePad = (4 - (nameBytes.size % 4)) % 4
+        val body = ByteBuffer.allocate(128).order(ByteOrder.LITTLE_ENDIAN)
+        // ServerName pointer (non-null)
+        body.putInt(0x00020000) // unique pointer referent ID
+        // Conformant string header
+        body.putInt(serverChars)   // max count
+        body.putInt(0)              // offset
+        body.putInt(serverChars)    // actual count
+        // Server name string (UTF-16LE)
+        for (c in serverName) {
+            body.putShort(c.code.toShort())
+        }
+        // 4-byte alignment padding
+        val pad = (4 - ((serverChars * 2) % 4)) % 4
+        for (i in 0 until pad) body.put(0)
 
-        // Build the body in a ByteArrayOutputStream
-        val body = java.io.ByteArrayOutputStream()
+        // Level = 1 (SHARE_INFO_1)
+        body.putInt(1)
 
-        // 1. ServerName unique pointer
-        writeIntLE(body, 0x00020000)  // referent_id (non-NULL)
+        body.flip()
+        val bodyData = ByteArray(body.limit())
+        body.get(bodyData)
 
-        // 1a. Conformant string
-        writeIntLE(body, nameChars)   // max_count (chars including null)
-        writeIntLE(body, 0)          // offset
-        writeIntLE(body, nameChars)  // actual_count (chars including null)
-        body.write(nameBytes)        // string data including null
-        for (i in 0 until namePad) body.write(0)  // padding to 4-byte boundary
-
-        // 2. InfoStruct reference pointer (non-NULL for [in, out])
-        writeIntLE(body, 0x00020004)  // referent_id
-
-        // 2a. SHARE_ENUM struct
-        writeIntLE(body, 1)  // Level = 1
-
-        // 2b. SHARE_ENUM_UNION: case 1 -> LPSHARE_INFO_1 Buf1
-        writeIntLE(body, 0)  // Buf1 pointer = NULL (server allocates)
-
-        // 3. PreferedMaximumLength
-        writeIntLE(body, -1)  // MAXDWORD = 0xFFFFFFFF
-
-        // 4. ResumeHandle unique pointer = NULL
-        writeIntLE(body, 0)
-
-        val paramBytes = body.toByteArray()
-
-        // DCERPC Request PDU: alloc_hint(4) + context_id(2) + opnum(2) + params
-        val reqBody = java.io.ByteArrayOutputStream()
-        writeIntLE(reqBody, paramBytes.size)  // alloc hint
-        writeShortLE(reqBody, 0)              // context id
-        writeShortLE(reqBody, 15)             // opnum: NetShareEnumAll
-        reqBody.write(paramBytes)
-
-        val bodyBytes = reqBody.toByteArray()
-        return buildDcerpcHeader(0x00, bodyBytes.size, 2) + bodyBytes
+        val header = buildDcerpcHeader(bodyData.size, 0x00) // 0x00 = Request
+        val result = ByteArray(header.size + bodyData.size)
+        System.arraycopy(header, 0, result, 0, header.size)
+        System.arraycopy(bodyData, 0, result, header.size, bodyData.size)
+        return result
     }
 
-    private fun writeIntLE(out: java.io.ByteArrayOutputStream, v: Int) {
-        out.write(v and 0xFF)
-        out.write((v shr 8) and 0xFF)
-        out.write((v shr 16) and 0xFF)
-        out.write((v shr 24) and 0xFF)
+    private fun padding(dataSize: Int): Int {
+        return (4 - (dataSize % 4)) % 4
     }
 
-    private fun writeShortLE(out: java.io.ByteArrayOutputStream, v: Int) {
-        out.write(v and 0xFF)
-        out.write((v shr 8) and 0xFF)
-    }
+    private var callId = 1
 
-    private fun buildDcerpcHeader(ptype: Int, bodyLen: Int, callId: Int): ByteArray {
+    private fun buildDcerpcHeader(bodyLen: Int, pduType: Int): ByteArray {
         val h = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN)
-        h.put(5); h.put(0)        // version 5.0
-        h.put(ptype.toByte())     // PDU type
-        h.put(0x03)               // flags: first+last fragment
-        h.put(0x10); h.put(0); h.put(0); h.put(0)  // data rep
-        h.putShort((bodyLen + 16).toShort())   // frag length
-        h.putShort(0.toShort())             // auth length
-        h.putInt(callId)          // call ID
+        h.put(5)           // rpc_vers
+        h.put(0)           // rpc_vers_minor
+        h.put(pduType.toByte()) // PDU type
+        h.put(0x03.toByte())    // pfc_flags (first+last frag)
+        // Data representation (8 bytes): little-endian, ASCII, IEEE
+        h.put(0x10.toByte()) // integer rep: little-endian
+        h.put(0x00.toByte()) // char rep: ASCII
+        h.put(0x00.toByte()) // float rep: IEEE
+        h.put(0x00.toByte()) // reserved
+        // frag_length (2 bytes) — set later
+        val totalLen = 16 + bodyLen
+        h.putShort(totalLen.toShort())
+        h.putShort(0)       // auth_length
+        h.putInt(callId)     // call ID
+        callId++
         return h.array()
     }
 
