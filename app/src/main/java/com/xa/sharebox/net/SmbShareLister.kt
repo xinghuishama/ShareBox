@@ -78,7 +78,8 @@ object SmbShareLister {
         val jcifsResult = JcifsShareLister.listShares(host, port, username, password)
         if (jcifsResult != null) {
             log("jcifs (SMB1 RAP) succeeded: ${jcifsResult.size} shares")
-            return jcifsResult.filter { it.name != "IPC$" }
+            return jcifsResult.map { ShareInfo(it.name, it.type, it.comment) }
+                .filter { it.name != "IPC$" }
         }
 
         // Fallback: try common share names + NBNS
