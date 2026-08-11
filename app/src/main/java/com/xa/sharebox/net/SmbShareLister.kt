@@ -67,11 +67,18 @@ object SmbShareLister {
             return result.filter { it.name != "IPC$" }
         }
 
-        // Try RAP (old SMB1 protocol via \PIPE\LANMAN)
+        // Try RAP via SMB2 named pipe (smbj)
         val rapResult = tryRap(host, port, username, password)
         if (rapResult != null) {
-            log("RAP succeeded: ${rapResult.size} shares")
+            log("RAP (smbj) succeeded: ${rapResult.size} shares")
             return rapResult.filter { it.name != "IPC$" }
+        }
+
+        // Try SMB1 RAP via jcifs (SMB1-only library)
+        val jcifsResult = JcifsShareLister.listShares(host, port, username, password)
+        if (jcifsResult != null) {
+            log("jcifs (SMB1 RAP) succeeded: ${jcifsResult.size} shares")
+            return jcifsResult.filter { it.name != "IPC$" }
         }
 
         // Fallback: try common share names + NBNS

@@ -62,8 +62,11 @@ dependencies {
     // FTP Client (Apache Commons Net)
     implementation("commons-net:commons-net:3.11.1")
 
-    // SMB Client (smbj)
+    // SMB Client (smbj) — SMB2/3
     implementation("com.hierynomus:smbj:0.13.0")
+
+    // SMB1 RAP (jcifs) — for share enumeration on old routers
+    implementation("org.codelibs:jcifs:1.3.18.2")
 
     // FTP Server (Apache FtpServer)
     implementation("org.apache.ftpserver:ftpserver-core:1.1.4") {
