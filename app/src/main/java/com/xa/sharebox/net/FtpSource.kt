@@ -137,9 +137,14 @@ class FtpFileSource(
         withContext(Dispatchers.IO) {
             withRetry {
                 localFile.parentFile?.mkdirs()
-                val total = withRetry { ftp.getSize(remotePath) }.coerceAtLeast(0L)
-                withRetry { ftp.retrieveFileStream(remotePath) }.use { input ->
-                    if (input == null) throw RuntimeException("下载失败: ${ftp.replyString}")
+                // Get file size via listFiles (FTPClient has no getSize method)
+                val total = try {
+                    ftp.listFiles(remotePath).firstOrNull()?.size ?: 0L
+                } catch (e: Exception) { 0L }
+
+                val input = ftp.retrieveFileStream(remotePath)
+                    ?: throw RuntimeException("下载失败: ${ftp.replyString}")
+                input.use {
                     FileOutputStream(localFile).use { output ->
                         val buf = ByteArray(8192)
                         var transferred = 0L
@@ -151,7 +156,6 @@ class FtpFileSource(
                             onProgress(transferred, total)
                         }
                     }
-                    // Must complete pending command after stream operations
                     if (!ftp.completePendingCommand())
                         throw RuntimeException("下载完成但FTP命令未完成: ${ftp.replyString}")
                 }
@@ -164,8 +168,9 @@ class FtpFileSource(
         withContext(Dispatchers.IO) {
             withRetry {
                 val total = localFile.length()
-                withRetry { ftp.storeFileStream(remotePath) }.use { output ->
-                    if (output == null) throw RuntimeException("上传失败: ${ftp.replyString}")
+                val output = ftp.storeFileStream(remotePath)
+                    ?: throw RuntimeException("上传失败: ${ftp.replyString}")
+                output.use {
                     FileInputStream(localFile).use { input ->
                         val buf = ByteArray(8192)
                         var transferred = 0L
