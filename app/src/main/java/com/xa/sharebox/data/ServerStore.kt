@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import com.xa.sharebox.model.FtpServerConfig
 import com.xa.sharebox.model.ServerConfig
 import com.xa.sharebox.model.ServerType
+import com.xa.sharebox.util.CryptoUtils
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -26,7 +27,7 @@ class ServerStore(context: Context) {
                     host = o.getString("host"),
                     port = o.optInt("port", if (o.getString("type") == "FTP") 21 else 445),
                     username = o.optString("username", ""),
-                    password = o.optString("password", ""),
+                    password = CryptoUtils.decrypt(o.optString("password", "")),
                     share = o.optString("share", "")
                 )
             )
@@ -43,7 +44,7 @@ class ServerStore(context: Context) {
                 put("host", s.host)
                 put("port", s.port)
                 put("username", s.username)
-                put("password", s.password)
+                put("password", CryptoUtils.encrypt(s.password))
                 put("share", s.share)
             })
         }
@@ -79,7 +80,7 @@ class ServerStore(context: Context) {
         return FtpServerConfig(
             port = prefs.getInt(KEY_FTP_PORT, 2211),
             username = prefs.getString(KEY_FTP_USER, "share") ?: "share",
-            password = prefs.getString(KEY_FTP_PASS, "1234") ?: "1234",
+            password = CryptoUtils.decrypt(prefs.getString(KEY_FTP_PASS, "") ?: ""),
             sharedPath = prefs.getString(KEY_FTP_PATH, "/storage/emulated/0") ?: "/storage/emulated/0"
         )
     }
@@ -88,7 +89,7 @@ class ServerStore(context: Context) {
         prefs.edit()
             .putInt(KEY_FTP_PORT, config.port)
             .putString(KEY_FTP_USER, config.username)
-            .putString(KEY_FTP_PASS, config.password)
+            .putString(KEY_FTP_PASS, CryptoUtils.encrypt(config.password))
             .putString(KEY_FTP_PATH, config.sharedPath)
             .apply()
     }

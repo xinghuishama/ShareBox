@@ -137,11 +137,25 @@ class FtpFileSource(
         withContext(Dispatchers.IO) {
             withRetry {
                 localFile.parentFile?.mkdirs()
-                FileOutputStream(localFile).use { output ->
-                    if (!ftp.retrieveFile(remotePath, output))
-                        throw RuntimeException("下载失败: ${ftp.replyString}")
+                val total = withRetry { ftp.getSize(remotePath) }.coerceAtLeast(0L)
+                withRetry { ftp.retrieveFileStream(remotePath) }.use { input ->
+                    if (input == null) throw RuntimeException("下载失败: ${ftp.replyString}")
+                    FileOutputStream(localFile).use { output ->
+                        val buf = ByteArray(8192)
+                        var transferred = 0L
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            output.write(buf, 0, n)
+                            transferred += n
+                            onProgress(transferred, total)
+                        }
+                    }
+                    // Must complete pending command after stream operations
+                    if (!ftp.completePendingCommand())
+                        throw RuntimeException("下载完成但FTP命令未完成: ${ftp.replyString}")
                 }
-                onProgress(localFile.length(), localFile.length())
+                onProgress(localFile.length(), localFile.length().coerceAtLeast(total))
             }
         }
     }
@@ -150,9 +164,21 @@ class FtpFileSource(
         withContext(Dispatchers.IO) {
             withRetry {
                 val total = localFile.length()
-                FileInputStream(localFile).use { input ->
-                    if (!ftp.storeFile(remotePath, input))
-                        throw RuntimeException("上传失败: ${ftp.replyString}")
+                withRetry { ftp.storeFileStream(remotePath) }.use { output ->
+                    if (output == null) throw RuntimeException("上传失败: ${ftp.replyString}")
+                    FileInputStream(localFile).use { input ->
+                        val buf = ByteArray(8192)
+                        var transferred = 0L
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            output.write(buf, 0, n)
+                            transferred += n
+                            onProgress(transferred, total)
+                        }
+                    }
+                    if (!ftp.completePendingCommand())
+                        throw RuntimeException("上传完成但FTP命令未完成: ${ftp.replyString}")
                 }
                 onProgress(total, total)
             }

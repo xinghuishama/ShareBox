@@ -162,6 +162,7 @@ class FtpServerService : Service() {
 
             logToFile("======== FTP SERVER STARTED port=${config.port} ========")
             updateNotification(config, "运行中")
+            isRunning = true
         } catch (e: Throwable) {
             logToFile("!!! START FAILED !!!")
             logToFile("${e.javaClass.name}: ${e.message}")
@@ -177,6 +178,7 @@ class FtpServerService : Service() {
 
     private fun stopFtpServer() {
         logToFile("======== STOP ========")
+        isRunning = false
         try {
             ftpServer?.stop()
             logToFile("server.stop() OK")
@@ -243,6 +245,12 @@ class FtpServerService : Service() {
 
     companion object {
         private const val TAG = "FtpServerService"
+
+        /** Reflects whether the FTP server is actually running (not just started). */
+        @Volatile
+        @JvmStatic
+        var isRunning: Boolean = false
+            private set
         private const val NOTIF_ID = 1
         private const val CHANNEL_ID = "ftp_server"
 

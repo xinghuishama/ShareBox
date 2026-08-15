@@ -112,6 +112,7 @@ class MainVM(app: Application) : AndroidViewModel(app) {
         loadServers()
         loadFtpConfig()
         updateIpList()
+        syncServerRunningState()
     }
 
     fun checkPermissions() {
@@ -656,13 +657,33 @@ class MainVM(app: Application) : AndroidViewModel(app) {
     fun startFtpServer() {
         val config = _state.value.ftpConfig
         val ok = com.xa.sharebox.net.FtpServerService.start(getApplication(), config)
-        if (ok) _state.value = _state.value.copy(serverRunning = true, message = "FTP服务已启动") else _state.value = _state.value.copy(message = "需要通知权限，请在系统设置中开启")
+        if (ok) {
+            // Don't set serverRunning=true yet — check actual status after server has time to start
+            _state.value = _state.value.copy(message = "正在启动FTP服务...")
+            viewModelScope.launch {
+                kotlinx.coroutines.delay(2000)
+                val running = com.xa.sharebox.net.FtpServerService.isRunning
+                _state.value = _state.value.copy(
+                    serverRunning = running,
+                    message = if (running) "FTP服务已启动" else "FTP服务启动失败，请查看日志"
+                )
+            }
+        } else {
+            _state.value = _state.value.copy(message = "需要通知权限，请在系统设置中开启")
+        }
         updateIpList()
     }
 
     fun stopFtpServer() {
         com.xa.sharebox.net.FtpServerService.stop(getApplication())
         _state.value = _state.value.copy(serverRunning = false)
+    }
+
+    /** Sync serverRunning with actual service state (e.g. after system kills the service). */
+    fun syncServerRunningState() {
+        _state.value = _state.value.copy(
+            serverRunning = com.xa.sharebox.net.FtpServerService.isRunning
+        )
     }
 
     private fun updateIpList() {
