@@ -101,11 +101,28 @@ object FileUtils {
 
     /** Open a file using the system default app. */
     fun openFile(context: Context, file: File) {
-        val uri = FileProvider.getUriForFile(
-            context,
-            context.packageName + ".fileprovider",
-            file
-        )
+        val uri = try {
+            FileProvider.getUriForFile(
+                context,
+                context.packageName + ".fileprovider",
+                file
+            )
+        } catch (e: IllegalArgumentException) {
+            // File is outside FileProvider paths (e.g. SD card) — copy to cache first
+            try {
+                val cacheFile = File(context.cacheDir, file.name)
+                file.inputStream().use { input ->
+                    cacheFile.outputStream().use { output -> input.copyTo(output) }
+                }
+                FileProvider.getUriForFile(
+                    context,
+                    context.packageName + ".fileprovider",
+                    cacheFile
+                )
+            } catch (e2: Exception) {
+                return
+            }
+        }
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, getMimeType(file))
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)

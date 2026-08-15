@@ -48,14 +48,6 @@ class FtpServerService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Redirect System.err to capture SLF4J/simpleLogger output
-        try {
-            val slf4jFile = File(Environment.getExternalStorageDirectory(), "Download/ftp_slf4j.log")
-            slf4jFile.parentFile?.mkdirs()
-            System.setErr(java.io.PrintStream(java.io.FileOutputStream(slf4jFile, true)))
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to redirect stderr", e)
-        }
         when (intent?.action) {
             ACTION_START -> {
                 val config = FtpServerConfig(
@@ -265,6 +257,9 @@ class FtpServerService : Service() {
             File(Environment.getExternalStorageDirectory(), "Download/ftp_debug.log")
         }
 
+        @Volatile
+        private var stderrRedirected = false
+
         init {
             // Configure slf4j-simple to write to our log file
             System.setProperty("org.slf4j.simpleLogger.logFile", "/storage/emulated/0/Download/ftp_slf4j.log")
@@ -272,12 +267,17 @@ class FtpServerService : Service() {
             System.setProperty("org.slf4j.simpleLogger.showDateTime", "true")
         }
 
+        private const val MAX_LOG_SIZE = 1_048_576L // 1 MB
+
         fun logToFile(msg: String) {
             val ts = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
             val line = "[$ts] $msg"
             Log.i(TAG, line)
             try {
                 logFile.parentFile?.mkdirs()
+                if (logFile.exists() && logFile.length() > MAX_LOG_SIZE) {
+                    logFile.writeText("")  // Truncate oversized log
+                }
                 logFile.appendText("$line\n")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to write log file", e)
@@ -285,6 +285,20 @@ class FtpServerService : Service() {
         }
 
         fun start(context: Context, config: FtpServerConfig): Boolean {
+            // Redirect stderr once (for slf4j-simple log capture)
+            if (!stderrRedirected) {
+                try {
+                    val slf4jFile = File(Environment.getExternalStorageDirectory(), "Download/ftp_slf4j.log")
+                    slf4jFile.parentFile?.mkdirs()
+                    if (slf4jFile.exists() && slf4jFile.length() > MAX_LOG_SIZE) {
+                        slf4jFile.writeText("")
+                    }
+                    System.setErr(java.io.PrintStream(java.io.FileOutputStream(slf4jFile, true)))
+                    stderrRedirected = true
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to redirect stderr", e)
+                }
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS)
                     != PackageManager.PERMISSION_GRANTED) {

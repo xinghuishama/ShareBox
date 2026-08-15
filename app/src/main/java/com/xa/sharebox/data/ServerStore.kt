@@ -64,6 +64,17 @@ class ServerStore(context: Context) {
         }
     }
 
+    /** Remove a server by matching its config fields (not by index). */
+    fun removeServer(config: ServerConfig) {
+        val list = getServers().toMutableList()
+        val removed = list.removeAll {
+            it.name == config.name && it.type == config.type &&
+            it.host == config.host && it.port == config.port &&
+            it.share == config.share
+        }
+        if (removed) saveServers(list)
+    }
+
     fun getFtpServerConfig(): FtpServerConfig {
         return FtpServerConfig(
             port = prefs.getInt(KEY_FTP_PORT, 2211),

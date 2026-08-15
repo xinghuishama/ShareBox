@@ -192,8 +192,8 @@ class MainVM(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(showAddServerDialog = false, message = "已添加 ${config.name}")
     }
 
-    fun removeServer(index: Int) {
-        store.removeServer(index)
+    fun removeServer(config: ServerConfig) {
+        store.removeServer(config)
         loadServers()
         _state.value = _state.value.copy(message = "已删除")
     }
@@ -347,7 +347,9 @@ class MainVM(app: Application) : AndroidViewModel(app) {
                 val currentPath = _state.value.remotePath
                 val sep = if (source is SmbFileSource) "\\" else "/"
                 val remotePath = if (currentPath.isEmpty() || currentPath == sep) {
-                    fileName
+                    // SMB root: path relative to share root (no leading sep)
+                    // FTP root: must include leading "/"
+                    if (source is SmbFileSource) fileName else "$sep$fileName"
                 } else {
                     currentPath.trimEnd(sep.toCharArray().first()) + sep + fileName
                 }

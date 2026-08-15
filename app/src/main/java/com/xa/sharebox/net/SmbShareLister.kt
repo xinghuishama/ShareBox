@@ -28,11 +28,15 @@ object SmbShareLister {
     )
 
     private val logFile = java.io.File("/storage/emulated/0/Download/smb_debug.log")
+    private const val MAX_LOG_SIZE = 1_048_576L // 1 MB
 
     private fun log(msg: String) {
         try {
             android.util.Log.i("SmbShareLister", msg)
             logFile.parentFile?.mkdirs()
+            if (logFile.exists() && logFile.length() > MAX_LOG_SIZE) {
+                logFile.writeText("")  // Truncate oversized log
+            }
             logFile.appendText("[${System.currentTimeMillis()}] $msg\n")
         } catch (_: Exception) {}
     }

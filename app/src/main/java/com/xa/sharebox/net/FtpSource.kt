@@ -4,6 +4,7 @@ import com.xa.sharebox.model.FileEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.apache.commons.net.ftp.FTPClient
+import org.apache.commons.net.ftp.FTPFile
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -105,7 +106,27 @@ class FtpFileSource(
     }
 
     override suspend fun delete(path: String): Boolean = withContext(Dispatchers.IO) {
-        withRetry { ftp.deleteFile(path) }
+        // Try as file first
+        if (withRetry { ftp.deleteFile(path) }) return@withContext true
+        // Try as directory (recursive delete)
+        try {
+            deleteDirRecursive(path)
+            withRetry { ftp.removeDirectory(path) }
+        } catch (e: Throwable) { false }
+    }
+
+    private fun deleteDirRecursive(path: String) {
+        val files = withRetry { ftp.listFiles(path) }
+        for (f in files) {
+            if (f.name == "." || f.name == "..") continue
+            val childPath = if (path.endsWith("/")) "$path${f.name}" else "$path/${f.name}"
+            if (f.isDirectory) {
+                deleteDirRecursive(childPath)
+                withRetry { ftp.removeDirectory(childPath) }
+            } else {
+                withRetry { ftp.deleteFile(childPath) }
+            }
+        }
     }
 
     override suspend fun rename(from: String, to: String): Boolean = withContext(Dispatchers.IO) {

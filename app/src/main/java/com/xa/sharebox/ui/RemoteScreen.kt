@@ -184,7 +184,7 @@ fun RemoteScreen(vm: MainVM, state: MainVM.UiState, isSmb: Boolean) {
                                 ServerCard(
                                     server = server,
                                     onConnect = { vm.connectServer(server) },
-                                    onDelete = { vm.removeServer(state.remoteServers.indexOf(server)) }
+                                    onDelete = { vm.removeServer(server) }
                                 )
                             }
                         }

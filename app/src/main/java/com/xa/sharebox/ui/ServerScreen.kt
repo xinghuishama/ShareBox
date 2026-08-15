@@ -1,5 +1,10 @@
 package com.xa.sharebox.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -28,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.xa.sharebox.model.FtpServerConfig
@@ -37,11 +43,36 @@ import com.xa.sharebox.vm.MainVM
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ServerScreen(vm: MainVM, state: MainVM.UiState) {
+    val context = LocalContext.current
     val config = state.ftpConfig
     var port by remember(config) { mutableStateOf(config.port.toString()) }
     var user by remember(config) { mutableStateOf(config.username) }
     var pass by remember(config) { mutableStateOf(config.password) }
     var path by remember(config) { mutableStateOf(config.sharedPath) }
+
+    val requestNotifPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) vm.startFtpServer()
+    }
+
+    fun startServer() {
+        vm.saveFtpConfig(
+            FtpServerConfig(
+                port = port.toIntOrNull() ?: 2211,
+                username = user,
+                password = pass,
+                sharedPath = path
+            )
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestNotifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            vm.startFtpServer()
+        }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -122,17 +153,7 @@ fun ServerScreen(vm: MainVM, state: MainVM.UiState) {
         ) {
             if (!state.serverRunning) {
                 Button(
-                    onClick = {
-                        vm.saveFtpConfig(
-                            FtpServerConfig(
-                                port = port.toIntOrNull() ?: 2211,
-                                username = user,
-                                password = pass,
-                                sharedPath = path
-                            )
-                        )
-                        vm.startFtpServer()
-                    },
+                    onClick = { startServer() },
                     modifier = Modifier.weight(1f)
                 ) { Text("启动服务") }
             } else {
