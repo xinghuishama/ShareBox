@@ -80,7 +80,7 @@ class ServerStore(context: Context) {
         return FtpServerConfig(
             port = prefs.getInt(KEY_FTP_PORT, 2211),
             username = prefs.getString(KEY_FTP_USER, "share") ?: "share",
-            password = CryptoUtils.decrypt(prefs.getString(KEY_FTP_PASS, "") ?: ""),
+            password = CryptoUtils.decrypt(prefs.getString(KEY_FTP_PASS, "1234") ?: "1234"),
             sharedPath = prefs.getString(KEY_FTP_PATH, "/storage/emulated/0") ?: "/storage/emulated/0"
         )
     }
