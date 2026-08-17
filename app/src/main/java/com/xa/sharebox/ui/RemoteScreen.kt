@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
@@ -41,6 +43,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -55,6 +58,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.xa.sharebox.model.FileEntry
@@ -546,64 +551,78 @@ fun AddServerDialog(
     var pass by remember { mutableStateOf("") }
     var share by remember { mutableStateOf("") }
 
-    AlertDialog(
+    Dialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (isSmb) "添加SMB服务器" else "添加FTP服务器") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = name, onValueChange = { name = it },
-                    label = { Text("名称") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 6.dp,
+            modifier = Modifier.widthIn(max = 320.dp)
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text(
+                    if (isSmb) "添加SMB服务器" else "添加FTP服务器",
+                    style = MaterialTheme.typography.titleMedium
                 )
-                OutlinedTextField(
-                    value = host, onValueChange = { host = it },
-                    label = { Text("主机地址") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = port, onValueChange = { port = it.filter { c -> c.isDigit() } },
-                    label = { Text("端口") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                if (isSmb) {
+                Spacer(Modifier.height(12.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     OutlinedTextField(
-                        value = share, onValueChange = { share = it },
-                        label = { Text("共享名") }, singleLine = true,
+                        value = name, onValueChange = { name = it },
+                        label = { Text("名称") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = host, onValueChange = { host = it },
+                        label = { Text("主机地址") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = port, onValueChange = { port = it.filter { c -> c.isDigit() } },
+                        label = { Text("端口") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (isSmb) {
+                        OutlinedTextField(
+                            value = share, onValueChange = { share = it },
+                            label = { Text("共享名") }, singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    OutlinedTextField(
+                        value = user, onValueChange = { user = it },
+                        label = { Text("用户名 (可空)") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = pass, onValueChange = { pass = it },
+                        label = { Text("密码 (可空)") }, singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-                OutlinedTextField(
-                    value = user, onValueChange = { user = it },
-                    label = { Text("用户名 (可空)") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = pass, onValueChange = { pass = it },
-                    label = { Text("密码 (可空)") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                if (name.isNotBlank() && host.isNotBlank()) {
-                    onAdd(
-                        ServerConfig(
-                            name = name,
-                            type = if (isSmb) ServerType.SMB else ServerType.FTP,
-                            host = host,
-                            port = port.toIntOrNull() ?: if (isSmb) 445 else 21,
-                            username = user,
-                            password = pass,
-                            share = share
-                        )
-                    )
+                Spacer(Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    TextButton(onClick = {
+                        if (name.isNotBlank() && host.isNotBlank()) {
+                            onAdd(
+                                ServerConfig(
+                                    name = name,
+                                    type = if (isSmb) ServerType.SMB else ServerType.FTP,
+                                    host = host,
+                                    port = port.toIntOrNull() ?: if (isSmb) 445 else 21,
+                                    username = user,
+                                    password = pass,
+                                    share = share
+                                )
+                            )
+                        }
+                    }) { Text("添加") }
                 }
-            }) { Text("添加") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            }
         }
-    )
+    }
 }
