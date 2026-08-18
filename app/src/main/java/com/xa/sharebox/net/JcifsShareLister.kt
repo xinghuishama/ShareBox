@@ -20,17 +20,16 @@ object JcifsShareLister {
         val comment: String
     )
 
-    private val logFile = File("/storage/emulated/0/Download/smb_debug.log")
     private const val MAX_LOG_SIZE = 1_048_576L // 1 MB
 
     private fun log(msg: String) {
+        android.util.Log.i("JcifsShareLister", msg)
         try {
-            logFile.parentFile?.mkdirs()
-            if (logFile.exists() && logFile.length() > MAX_LOG_SIZE) {
-                logFile.writeText("")  // Truncate oversized log
+            val file = File(com.xa.sharebox.App.logDir, "smb_debug.log")
+            if (file.exists() && file.length() > MAX_LOG_SIZE) {
+                file.writeText("")
             }
-            val ts = System.currentTimeMillis()
-            logFile.appendText("[$ts] $msg\n")
+            file.appendText("[${System.currentTimeMillis()}] $msg\n")
         } catch (_: Exception) {}
     }
 

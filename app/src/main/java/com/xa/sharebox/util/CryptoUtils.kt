@@ -37,7 +37,6 @@ object CryptoUtils {
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(256)
-            .setRandomizedEncryptionRequired(false)  // We manage IV ourselves for deterministic format
             .build()
         keyGen.init(spec)
         return keyGen.generateKey()
@@ -54,7 +53,8 @@ object CryptoUtils {
             // Format: Base64(iv + ciphertext)
             Base64.encodeToString(iv + encrypted, Base64.NO_WRAP)
         } catch (e: Exception) {
-            // Fallback: return plaintext if keystore fails (better than losing data)
+            // Keystore failure — log warning, fall back to plaintext to avoid data loss
+            android.util.Log.w("CryptoUtils", "encrypt failed, storing plaintext fallback", e)
             plain
         }
     }

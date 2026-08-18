@@ -16,23 +16,29 @@ class ServerStore(context: Context) {
 
     fun getServers(): List<ServerConfig> {
         val json = prefs.getString(KEY_SERVERS, "[]") ?: "[]"
-        val arr = JSONArray(json)
-        val list = mutableListOf<ServerConfig>()
-        for (i in 0 until arr.length()) {
-            val o = arr.getJSONObject(i)
-            list.add(
-                ServerConfig(
-                    name = o.getString("name"),
-                    type = if (o.getString("type") == "FTP") ServerType.FTP else ServerType.SMB,
-                    host = o.getString("host"),
-                    port = o.optInt("port", if (o.getString("type") == "FTP") 21 else 445),
-                    username = o.optString("username", ""),
-                    password = CryptoUtils.decrypt(o.optString("password", "")),
-                    share = o.optString("share", "")
+        return try {
+            val arr = JSONArray(json)
+            val list = mutableListOf<ServerConfig>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(
+                    ServerConfig(
+                        name = o.getString("name"),
+                        type = if (o.getString("type") == "FTP") ServerType.FTP else ServerType.SMB,
+                        host = o.getString("host"),
+                        port = o.optInt("port", if (o.getString("type") == "FTP") 21 else 445),
+                        username = o.optString("username", ""),
+                        password = CryptoUtils.decrypt(o.optString("password", "")),
+                        share = o.optString("share", "")
+                    )
                 )
-            )
+            }
+            list
+        } catch (e: Exception) {
+            android.util.Log.e("ServerStore", "Failed to parse servers JSON, resetting", e)
+            prefs.edit().putString(KEY_SERVERS, "[]").apply()
+            emptyList()
         }
-        return list
     }
 
     fun saveServers(list: List<ServerConfig>) {

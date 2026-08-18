@@ -10,7 +10,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.Environment
 import android.os.IBinder
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -48,7 +47,13 @@ class FtpServerService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        // System restarted the service with null intent — don't resume
+        if (intent == null || intent.action == null) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        initLogDir(this)
+        when (intent.action) {
             ACTION_START -> {
                 val config = FtpServerConfig(
                     port = intent.getIntExtra(EXTRA_PORT, 2211),
@@ -69,7 +74,7 @@ class FtpServerService : Service() {
                 stopSelf()
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun startFtpServer(config: FtpServerConfig) {
@@ -107,20 +112,6 @@ class FtpServerService : Service() {
             user.maxIdleTime = 300
             userManager.save(user)
             logToFile("step3: user saved: ${user.name} home=${user.homeDirectory}")
-
-            if (config.password.isEmpty()) {
-                val anon = object : BaseUser() {}
-                anon.name = "anonymous"
-                anon.password = ""
-                anon.homeDirectory = config.sharedPath
-                anon.enabled = true
-                anon.authorities = listOf(
-                    WritePermission(),
-                    org.apache.ftpserver.usermanager.impl.ConcurrentLoginPermission(100, 100)
-                )
-                userManager.save(anon)
-                logToFile("step3: anonymous user saved")
-            }
 
             serverFactory.userManager = userManager
 
@@ -261,47 +252,54 @@ class FtpServerService : Service() {
         const val EXTRA_PASS = "pass"
         const val EXTRA_PATH = "path"
 
-        private val logFile: File by lazy {
-            File(Environment.getExternalStorageDirectory(), "Download/ftp_debug.log")
-        }
+        @Volatile
+        private var logFile: File? = null
+
+        @Volatile
+        private var slf4jFile: File? = null
 
         @Volatile
         private var stderrRedirected = false
 
-        init {
-            // Configure slf4j-simple to write to our log file
-            System.setProperty("org.slf4j.simpleLogger.logFile", "/storage/emulated/0/Download/ftp_slf4j.log")
-            System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "debug")
-            System.setProperty("org.slf4j.simpleLogger.showDateTime", "true")
-        }
-
         private const val MAX_LOG_SIZE = 1_048_576L // 1 MB
+
+        /** Initialize log file paths in app-private storage. Must be called before any logging. */
+        fun initLogDir(context: Context) {
+            if (logFile == null) {
+                logFile = File(context.filesDir, "ftp_debug.log")
+            }
+            if (slf4jFile == null) {
+                slf4jFile = File(context.filesDir, "ftp_slf4j.log")
+                System.setProperty("org.slf4j.simpleLogger.logFile", slf4jFile!!.absolutePath)
+                System.setProperty("org.slf4j.simpleLogger.defaultLogLevel", "debug")
+                System.setProperty("org.slf4j.simpleLogger.showDateTime", "true")
+            }
+        }
 
         fun logToFile(msg: String) {
             val ts = SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US).format(Date())
             val line = "[$ts] $msg"
             Log.i(TAG, line)
             try {
-                logFile.parentFile?.mkdirs()
-                if (logFile.exists() && logFile.length() > MAX_LOG_SIZE) {
-                    logFile.writeText("")  // Truncate oversized log
+                val file = logFile ?: return  // No log file if initLogDir not called
+                if (file.exists() && file.length() > MAX_LOG_SIZE) {
+                    file.writeText("")
                 }
-                logFile.appendText("$line\n")
+                file.appendText("$line\n")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to write log file", e)
             }
         }
 
         fun start(context: Context, config: FtpServerConfig): Boolean {
-            // Redirect stderr once (for slf4j-simple log capture)
+            initLogDir(context)
             if (!stderrRedirected) {
                 try {
-                    val slf4jFile = File(Environment.getExternalStorageDirectory(), "Download/ftp_slf4j.log")
-                    slf4jFile.parentFile?.mkdirs()
-                    if (slf4jFile.exists() && slf4jFile.length() > MAX_LOG_SIZE) {
-                        slf4jFile.writeText("")
+                    val slf = slf4jFile ?: throw IllegalStateException("slf4jFile not initialized")
+                    if (slf.exists() && slf.length() > MAX_LOG_SIZE) {
+                        slf.writeText("")
                     }
-                    System.setErr(java.io.PrintStream(java.io.FileOutputStream(slf4jFile, true)))
+                    System.setErr(java.io.PrintStream(java.io.FileOutputStream(slf, true)))
                     stderrRedirected = true
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to redirect stderr", e)
@@ -369,18 +367,17 @@ class FtpServerService : Service() {
             if (authentication is UsernamePasswordAuthentication) {
                 val username = authentication.username
                 val password = authentication.password
-                FtpServerService.logToFile("AUTH: user='$username' passLen=${password?.length ?: -1}")
+                FtpServerService.logToFile("AUTH: user='$username'")
                 val user = users[username]
                 if (user != null) {
                     val baseUser = user as BaseUser
-                    FtpServerService.logToFile("AUTH: found user, stored passLen=${baseUser.password?.length ?: -1}")
                     if (baseUser.password == password) {
                         FtpServerService.logToFile("AUTH: SUCCESS")
                         return user
                     }
                     FtpServerService.logToFile("AUTH: password mismatch")
                 } else {
-                    FtpServerService.logToFile("AUTH: user not found, users=${users.keys}")
+                    FtpServerService.logToFile("AUTH: user not found")
                 }
             } else {
                 FtpServerService.logToFile("AUTH: not UsernamePasswordAuthentication")
@@ -417,7 +414,10 @@ class DebugFtplet : DefaultFtplet() {
     }
 
     override fun beforeCommand(session: FtpSession, request: FtpRequest): FtpletResult {
-        FtpServerService.logToFile("FTPLET CMD: ${request.command} ${request.argument}")
+        val cmd = request.command
+        // Mask password argument — never log PASS command parameters
+        val arg = if (cmd.equals("PASS", ignoreCase = true)) "***" else request.argument
+        FtpServerService.logToFile("FTPLET CMD: $cmd $arg")
         return FtpletResult.DEFAULT
     }
 

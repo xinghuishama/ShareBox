@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <include domain="sharedpref" path="sharebox.xml" />
+    <!-- Exclude sharebox.xml: contains encrypted passwords whose Keystore key
+         is not backed up. Restoring on a new device would cause silent corruption. -->
+    <exclude domain="sharedpref" path="sharebox.xml" />
 </full-backup-content>
