@@ -57,6 +57,9 @@ fun ServerScreen(vm: MainVM, state: MainVM.UiState) {
     }
 
     fun startServer() {
+        if (pass.isBlank()) {
+            pass = com.xa.sharebox.data.ServerStore.generateRandomPassword()
+        }
         vm.saveFtpConfig(
             FtpServerConfig(
                 port = port.toIntOrNull() ?: 2211,
@@ -164,6 +167,9 @@ fun ServerScreen(vm: MainVM, state: MainVM.UiState) {
             }
             OutlinedButton(
                 onClick = {
+                    if (pass.isBlank()) {
+                        pass = com.xa.sharebox.data.ServerStore.generateRandomPassword()
+                    }
                     vm.saveFtpConfig(
                         FtpServerConfig(
                             port = port.toIntOrNull() ?: 2211,

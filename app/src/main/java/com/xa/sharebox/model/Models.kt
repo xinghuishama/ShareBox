@@ -37,7 +37,7 @@ data class ServerConfig(
 data class FtpServerConfig(
     val port: Int = 2211,
     val username: String = "share",
-    val password: String = "1234",
+    val password: String = "",  // No default password — ServerStore generates a random one on first run
     val sharedPath: String = "/storage/emulated/0"
 )
 

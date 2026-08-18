@@ -55,11 +55,13 @@ class FtpServerService : Service() {
         initLogDir(this)
         when (intent.action) {
             ACTION_START -> {
+                // No hardcoded fallback password — read the persisted config instead
+                val stored = com.xa.sharebox.data.ServerStore(this).getFtpServerConfig()
                 val config = FtpServerConfig(
-                    port = intent.getIntExtra(EXTRA_PORT, 2211),
-                    username = intent.getStringExtra(EXTRA_USER) ?: "share",
-                    password = intent.getStringExtra(EXTRA_PASS) ?: "1234",
-                    sharedPath = intent.getStringExtra(EXTRA_PATH) ?: "/storage/emulated/0"
+                    port = intent.getIntExtra(EXTRA_PORT, stored.port),
+                    username = intent.getStringExtra(EXTRA_USER) ?: stored.username,
+                    password = intent.getStringExtra(EXTRA_PASS) ?: stored.password,
+                    sharedPath = intent.getStringExtra(EXTRA_PATH) ?: stored.sharedPath
                 )
                 val notification = createNotification(config, "启动中...")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {

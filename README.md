@@ -30,7 +30,7 @@ yes | ~/android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=$HOME/android
 
 # 4. 克隆项目
 cd ~
-git clone <your-repo-url> ShareBox
+git clone https://github.com/xinghuishama/ShareBox.git ShareBox
 cd ShareBox
 
 # 5. 配置 SDK 路径

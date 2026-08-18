@@ -86,9 +86,21 @@ class ServerStore(context: Context) {
         return FtpServerConfig(
             port = prefs.getInt(KEY_FTP_PORT, 2211),
             username = prefs.getString(KEY_FTP_USER, "share") ?: "share",
-            password = CryptoUtils.decrypt(prefs.getString(KEY_FTP_PASS, "1234") ?: "1234"),
+            password = getOrCreateFtpPassword(),
             sharedPath = prefs.getString(KEY_FTP_PATH, "/storage/emulated/0") ?: "/storage/emulated/0"
         )
+    }
+
+    /**
+     * Returns the stored FTP server password. On first run (no password stored),
+     * generates a random one and persists it — no hardcoded default password.
+     */
+    private fun getOrCreateFtpPassword(): String {
+        val stored = prefs.getString(KEY_FTP_PASS, null)
+        if (stored != null) return CryptoUtils.decrypt(stored)
+        val generated = generateRandomPassword()
+        prefs.edit().putString(KEY_FTP_PASS, CryptoUtils.encrypt(generated)).apply()
+        return generated
     }
 
     fun saveFtpServerConfig(config: FtpServerConfig) {
@@ -106,5 +118,13 @@ class ServerStore(context: Context) {
         private const val KEY_FTP_USER = "ftp_user"
         private const val KEY_FTP_PASS = "ftp_pass"
         private const val KEY_FTP_PATH = "ftp_path"
+
+        private val PASSWORD_CHARS = ('a'..'z') + ('A'..'Z') + ('0'..'9')
+
+        /** Generates a random 10-char alphanumeric password using SecureRandom. */
+        internal fun generateRandomPassword(): String {
+            val random = java.security.SecureRandom()
+            return (1..10).map { PASSWORD_CHARS[random.nextInt(PASSWORD_CHARS.size)] }.joinToString("")
+        }
     }
 }
