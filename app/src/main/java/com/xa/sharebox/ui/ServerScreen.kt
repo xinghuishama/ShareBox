@@ -5,7 +5,12 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -229,7 +234,7 @@ fun ServerScreen(vm: MainVM, state: MainVM.UiState) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun LogViewerDialog(
     context: android.content.Context,
@@ -317,6 +322,12 @@ private fun LogViewerDialog(
                                 fontFamily = FontFamily.Monospace,
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .combinedClickable(
+                                        onClick = {},
+                                        onLongClick = {
+                                            copyToClipboard(context, line)
+                                        }
+                                    )
                                     .padding(vertical = 1.dp)
                             )
                         }
@@ -339,6 +350,12 @@ private fun LogViewerDialog(
                     Row {
                         TextButton(
                             onClick = {
+                                copyToClipboard(context, logLines.joinToString("\n"))
+                            }
+                        ) { Text("复制") }
+
+                        TextButton(
+                            onClick = {
                                 logFiles[selectedTab].let { if (it.exists()) it.writeText("") }
                                 refreshTrigger++
                             }
@@ -352,4 +369,10 @@ private fun LogViewerDialog(
             }
         }
     }
+}
+
+private fun copyToClipboard(context: Context, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText("log", text))
+    Toast.makeText(context, "已复制 ${text.lineSequence().count()} 行", Toast.LENGTH_SHORT).show()
 }
