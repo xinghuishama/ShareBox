@@ -558,49 +558,61 @@ fun AddServerDialog(
         Surface(
             shape = RoundedCornerShape(16.dp),
             tonalElevation = 6.dp,
-            modifier = Modifier.widthIn(max = 320.dp)
+            modifier = Modifier.widthIn(max = 360.dp)
         ) {
-            Column(modifier = Modifier.padding(20.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
                 Text(
                     if (isSmb) "添加SMB服务器" else "添加FTP服务器",
                     style = MaterialTheme.typography.titleMedium
                 )
-                Spacer(Modifier.height(12.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Spacer(Modifier.height(8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = name, onValueChange = { name = it },
                         label = { Text("名称") }, singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    OutlinedTextField(
-                        value = host, onValueChange = { host = it },
-                        label = { Text("主机地址") }, singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = port, onValueChange = { port = it.filter { c -> c.isDigit() } },
-                        label = { Text("端口") }, singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    // Host + port on the same row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = host, onValueChange = { host = it },
+                            label = { Text("主机地址") }, singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = port, onValueChange = { port = it.filter { c -> c.isDigit() } },
+                            label = { Text("端口") }, singleLine = true,
+                            modifier = Modifier.width(92.dp)
+                        )
+                    }
                     if (isSmb) {
                         OutlinedTextField(
                             value = share, onValueChange = { share = it },
-                            label = { Text("共享名") }, singleLine = true,
+                            label = { Text("共享名 (可空)") }, singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
-                    OutlinedTextField(
-                        value = user, onValueChange = { user = it },
-                        label = { Text("用户名 (可空)") }, singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = pass, onValueChange = { pass = it },
-                        label = { Text("密码 (可空)") }, singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    // User + password on the same row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = user, onValueChange = { user = it },
+                            label = { Text("用户名") }, singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = pass, onValueChange = { pass = it },
+                            label = { Text("密码") }, singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(12.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End
